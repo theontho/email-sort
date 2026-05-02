@@ -1,0 +1,31 @@
+[project]
+name = "email-sort"
+version = "0.1.0"
+description = "Automated email sorting and classification using LLMs and heuristics"
+readme = "README.md"
+authors = [
+    { name = "theontho", email = "22130+theontho@users.noreply.github.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "fasttext>=0.9.3",
+    "fasttext-langdetect>=1.0.5",
+    "numpy<2.0",
+    "openai>=2.32.0",
+    "pydantic>=2.13.3",
+    "python-dotenv>=1.2.2",
+    "requests>=2.33.1",
+    "rich>=13.9.4",
+    "tqdm>=4.67.3",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.20.2",
+    "ruff>=0.15.12",
+    "types-requests>=2.33.0.20260408",
+    "types-tqdm>=4.67.3.20260408",
+]
+
+[project.scripts]
+email-sort = "email_sort.cli:main"

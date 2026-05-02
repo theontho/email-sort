@@ -1,0 +1,29 @@
+{
+  "id": "chatcmpl-l6pn1yt0zixs97jhnrlk",
+  "object": "chat.completion",
+  "created": 1777260974,
+  "model": "qwen/qwen3.6-35b-a3b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "\n\nTest received! I'm up and running. What can I help you with today?",
+        "reasoning_content": "Here's a thinking process:\n\n1.  **Analyze User Input:** The user just said \"test\". This is a very short, open-ended input. It's likely a simple test to see if the system is working, responsive, or ready to interact.\n\n2.  **Identify Intent:** The intent is probably to check connectivity, functionality, or just get a response. No specific task, question, or context is provided.\n\n3.  **Determine Response Strategy:**\n   - Acknowledge the input\n   - Confirm readiness/availability\n   - Keep it brief and friendly\n   - Invite the user to provide a specific request or question\n   - Maintain a helpful, professional tone\n\n4.  **Draft Response (Mental):**\n   \"Test received! I'm here and ready to help. What can I assist you with today?\"\n\n5.  **Refine Response:** Check against guidelines:\n   - Clear, concise, helpful\n   - Matches the simplicity of the input\n   - Open-ended to encourage next step\n   - No overcomplication\n\n   The draft looks good. It's standard, polite, and functional.\n\n6.  **Final Output Generation:** Output the refined response.✅\n",
+        "tool_calls": []
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 11,
+    "completion_tokens": 275,
+    "total_tokens": 286,
+    "completion_tokens_details": {
+      "reasoning_tokens": 255
+    }
+  },
+  "stats": {},
+  "system_fingerprint": "qwen/qwen3.6-35b-a3b"
+}

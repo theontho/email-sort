@@ -1,0 +1,26 @@
+[general]
+# The default model to use for classification if not specified per-server
+model_name = "qwen/qwen3.5-9b"
+
+# Your Fastmail API token (fmu1-...)
+fastmail_token = "your_fastmail_token_here"
+
+# Default LM Studio / LiteLLM API Key if needed
+# lmstudio_key = "lm-studio"
+
+[[servers]]
+name = "Local Machine"
+url = "http://localhost:1234/v1"
+workers = 4
+# api_key = "sk-..."
+# model = "qwen/qwen3.5-9b"
+
+# Example of a remote server
+# [[servers]]
+# name = "Remote GPU PC"
+# url = "http://192.168.1.100:1234/v1"
+# workers = 8
+# disabled = true
+
+# List of personal domains/emails used to filter "Not for me" emails
+my_domains = ["icloud.com", "appleid.com", "gmail.com"]
