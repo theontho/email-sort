@@ -25,9 +25,7 @@ def ingest_fastmail():
     print("Querying Fastmail for message IDs...")
     query_req = {
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
-        "methodCalls": [
-            ["Email/query", {"accountId": account_id, "limit": 50000}, "0"]
-        ],
+        "methodCalls": [["Email/query", {"accountId": account_id, "limit": 50000}, "0"]],
     }
 
     res = requests.post(api_url, headers=headers, json=query_req)
@@ -149,19 +147,11 @@ def ingest_fastmail():
             # Extract headers from the list
             headers_list = email_data.get("headers", [])
             list_unsubscribe = next(
-                (
-                    h["value"]
-                    for h in headers_list
-                    if h["name"].lower() == "list-unsubscribe"
-                ),
+                (h["value"] for h in headers_list if h["name"].lower() == "list-unsubscribe"),
                 "",
             )
             auth_results = next(
-                (
-                    h["value"]
-                    for h in headers_list
-                    if h["name"].lower() == "authentication-results"
-                ),
+                (h["value"] for h in headers_list if h["name"].lower() == "authentication-results"),
                 "",
             ).lower()
             dmarc_fail = "dmarc=fail" in auth_results
@@ -169,25 +159,17 @@ def ingest_fastmail():
 
             cc = json.dumps(email_data.get("cc")) if email_data.get("cc") else None
             bcc = json.dumps(email_data.get("bcc")) if email_data.get("bcc") else None
-            reply_to = (
-                json.dumps(email_data.get("replyTo"))
-                if email_data.get("replyTo")
-                else None
-            )
+            reply_to = json.dumps(email_data.get("replyTo")) if email_data.get("replyTo") else None
             keywords = (
-                json.dumps(email_data.get("keywords"))
-                if email_data.get("keywords")
-                else None
+                json.dumps(email_data.get("keywords")) if email_data.get("keywords") else None
             )
             mailbox_ids = (
-                json.dumps(email_data.get("mailboxIds"))
-                if email_data.get("mailboxIds")
-                else None
+                json.dumps(email_data.get("mailboxIds")) if email_data.get("mailboxIds") else None
             )
             has_attachment = 1 if email_data.get("hasAttachment") else 0
 
             # Optimize headers
-            headers_dict = {}
+            headers_dict: dict[str, list[str]] = {}
             for h in headers_list:
                 name = h.get("name")
                 value = h.get("value")

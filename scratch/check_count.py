@@ -45,9 +45,7 @@ def get_fastmail_count():
     mailboxes = folders_res["methodResponses"][0][1].get("list", [])
     print("\nBreakdown by folder:")
     for mb in mailboxes:
-        print(
-            f"- {mb['name']}: {mb['totalEmails']} emails ({mb['unreadEmails']} unread)"
-        )
+        print(f"- {mb['name']}: {mb['totalEmails']} emails ({mb['unreadEmails']} unread)")
 
 
 if __name__ == "__main__":

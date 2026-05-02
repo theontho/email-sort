@@ -56,17 +56,13 @@ def run_test(name, system_msg, user_prefix=""):
             print(
                 f"Sample {i + 1}: {duration:.2f}s | Think: {has_think} | Content: {content.strip()}"
             )
-            results.append(
-                {"duration": duration, "has_think": has_think, "length": len(content)}
-            )
+            results.append({"duration": duration, "has_think": has_think, "length": len(content)})
         except Exception as e:
             print(f"Sample {i + 1}: FAILED - {e}")
 
     avg_time = sum(r["duration"] for r in results) / len(results) if results else 0
     think_count = sum(1 for r in results if r["has_think"])
-    print(
-        f"SUMMARY {name}: Avg Time: {avg_time:.2f}s | Think Count: {think_count}/{len(SAMPLES)}"
-    )
+    print(f"SUMMARY {name}: Avg Time: {avg_time:.2f}s | Think Count: {think_count}/{len(SAMPLES)}")
     return results
 
 

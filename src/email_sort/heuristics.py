@@ -56,16 +56,12 @@ def run_heuristics():
         updates.append((lang, is_not_for_me, email_id))
 
         if len(updates) >= 1000:
-            c.executemany(
-                "UPDATE emails SET language=?, is_not_for_me=? WHERE id=?", updates
-            )
+            c.executemany("UPDATE emails SET language=?, is_not_for_me=? WHERE id=?", updates)
             conn.commit()
             updates = []
 
     if updates:
-        c.executemany(
-            "UPDATE emails SET language=?, is_not_for_me=? WHERE id=?", updates
-        )
+        c.executemany("UPDATE emails SET language=?, is_not_for_me=? WHERE id=?", updates)
         conn.commit()
 
     print("Heuristics complete.")

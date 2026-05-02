@@ -22,6 +22,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "mypy>=1.20.2",
+    "pytest>=8.0.0",
     "ruff>=0.15.12",
     "types-requests>=2.33.0.20260408",
     "types-tqdm>=4.67.3.20260408",
@@ -29,3 +30,11 @@ dev = [
 
 [project.scripts]
 email-sort = "email_sort.cli:main"
+
+[tool.ruff]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.14"
+ignore_missing_imports = true
+check_untyped_defs = true

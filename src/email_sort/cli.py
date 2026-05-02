@@ -154,9 +154,7 @@ def main():
     parser_fastmail.set_defaults(func=command_ingest_fastmail)
 
     # ingest-mbox
-    parser_mbox = subparsers.add_parser(
-        "ingest-mbox", help="Ingest emails from an MBOX file"
-    )
+    parser_mbox = subparsers.add_parser("ingest-mbox", help="Ingest emails from an MBOX file")
     parser_mbox.add_argument("mbox_path", type=str, help="Path to the mbox file")
     parser_mbox.add_argument(
         "--table",
@@ -167,12 +165,8 @@ def main():
     parser_mbox.set_defaults(func=command_ingest_mbox)
 
     # classify
-    parser_classify = subparsers.add_parser(
-        "classify", help="Classify emails using LLM"
-    )
-    parser_classify.add_argument(
-        "--limit", type=int, help="Maximum number of emails to classify"
-    )
+    parser_classify = subparsers.add_parser("classify", help="Classify emails using LLM")
+    parser_classify.add_argument("--limit", type=int, help="Maximum number of emails to classify")
     parser_classify.add_argument(
         "--table", type=str, default="all", help="Table name to classify (default: all)"
     )
@@ -196,15 +190,11 @@ def main():
         default="all",
         help="Table to process (emails, google_emails, or all)",
     )
-    parser_lang.add_argument(
-        "--batch", type=int, default=1000, help="Batch size for processing"
-    )
+    parser_lang.add_argument("--batch", type=int, default=1000, help="Batch size for processing")
     parser_lang.set_defaults(func=command_detect_language)
 
     # init-db
-    parser_init_db = subparsers.add_parser(
-        "init-db", help="Initialize the SQLite database"
-    )
+    parser_init_db = subparsers.add_parser("init-db", help="Initialize the SQLite database")
     parser_init_db.set_defaults(func=command_init_db)
 
     # heuristics
@@ -221,15 +211,11 @@ def main():
     parser_export.set_defaults(func=command_export)
 
     # config
-    parser_config = subparsers.add_parser(
-        "config", help="Show current configuration and paths"
-    )
+    parser_config = subparsers.add_parser("config", help="Show current configuration and paths")
     parser_config.set_defaults(func=command_config)
 
     # watch
-    parser_watch = subparsers.add_parser(
-        "watch", help="Watch progress of email classification"
-    )
+    parser_watch = subparsers.add_parser("watch", help="Watch progress of email classification")
     parser_watch.set_defaults(func=command_watch)
 
     args = parser.parse_args()
