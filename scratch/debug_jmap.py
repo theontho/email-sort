@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 def debug_jmap():
     token = os.environ.get("FASTMAIL_TOKEN")
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -30,7 +31,13 @@ def debug_jmap():
                 {
                     "accountId": account_id,
                     "ids": [email_id],
-                    "properties": ["id", "subject", "preview", "textBody", "bodyValues"],
+                    "properties": [
+                        "id",
+                        "subject",
+                        "preview",
+                        "textBody",
+                        "bodyValues",
+                    ],
                     "bodyProperties": ["partId", "value", "isTruncated"],
                 },
                 "0",
@@ -39,6 +46,7 @@ def debug_jmap():
     }
     res = requests.post(api_url, headers=headers, json=fetch_req)
     print(json.dumps(res.json(), indent=2))
+
 
 if __name__ == "__main__":
     debug_jmap()

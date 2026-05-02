@@ -1,5 +1,4 @@
 import os
-import json
 import time
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -19,8 +18,11 @@ try:
     completion = client.chat.completions.create(
         model=model_name,
         messages=[
-            {"role": "system", "content": "You are a helpful assistant. Reply only with 'pong'."},
-            {"role": "user", "content": "ping"}
+            {
+                "role": "system",
+                "content": "You are a helpful assistant. Reply only with 'pong'.",
+            },
+            {"role": "user", "content": "ping"},
         ],
         temperature=0.1,
     )

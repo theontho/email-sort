@@ -1,6 +1,6 @@
 # Email Sorter
 
-A comprehensive, automated email sorting and classification pipeline designed to handle gigabytes of mail offline using heuristics and local language models via OpenAI-compatible APIs (like LM-Studio, Ollama, or vLLM).
+A comprehensive, automated email sorting and classification pipeline designed to handle gigabytes of mail offline using heuristics and local language models via OpenAI-compatible APIs (like LM-Studio, Ollama, or vLLM) with multiple llm machine runners.
 
 ## Prerequisites
 

@@ -1,6 +1,8 @@
 import mailbox
 import email.utils
 from email.header import decode_header
+import json
+from tqdm import tqdm
 from email_sort.db import get_db
 
 
@@ -23,14 +25,12 @@ def decode_str(s):
         return str(s)
 
 
-from tqdm import tqdm
-
 def parse_mbox(mbox_path, table_name="emails"):
     print(f"Opening {mbox_path}...")
     print("Indexing MBOX (this may take several minutes for 10GB+ files)...")
     mbox = mailbox.mbox(mbox_path)
-    
-    # Using a simple loop to get count with a progress bar if we wanted, 
+
+    # Using a simple loop to get count with a progress bar if we wanted,
     # but let's just use total=None if len() is too slow.
     # Actually len(mbox) is usually what people use.
     total_messages = None
@@ -49,9 +49,9 @@ def parse_mbox(mbox_path, table_name="emails"):
         for message in mbox:
             if processed_count % 1000 == 0 and processed_count > 0:
                 conn.commit()
-            
+
             pbar.update(1)
-            
+
             source = "gmail"
             message_id = decode_str(message.get("Message-ID", ""))
             subject = decode_str(message.get("Subject", ""))
@@ -70,7 +70,8 @@ def parse_mbox(mbox_path, table_name="emails"):
                             payload = part.get_payload(decode=True)
                             if payload:
                                 text = payload.decode(
-                                    part.get_content_charset() or "utf-8", errors="ignore"
+                                    part.get_content_charset() or "utf-8",
+                                    errors="ignore",
                                 )
                                 body_text += text
                         except Exception:
@@ -80,7 +81,8 @@ def parse_mbox(mbox_path, table_name="emails"):
                             payload = part.get_payload(decode=True)
                             if payload:
                                 html = payload.decode(
-                                    part.get_content_charset() or "utf-8", errors="ignore"
+                                    part.get_content_charset() or "utf-8",
+                                    errors="ignore",
                                 )
                                 body_html += html
                         except Exception:
@@ -114,7 +116,6 @@ def parse_mbox(mbox_path, table_name="emails"):
             )
             spf_fail = "spf=fail" in str(message.get("Received-SPF", "")).lower()
 
-            import json
             cc = decode_str(message.get("Cc", ""))
             bcc = decode_str(message.get("Bcc", ""))
             reply_to = decode_str(message.get("Reply-To", ""))
@@ -130,10 +131,10 @@ def parse_mbox(mbox_path, table_name="emails"):
             # Extract Gmail labels and other metadata
             gmail_labels = headers_dict.get("X-Gmail-Labels", [])
             mailbox_ids = ",".join(gmail_labels) if gmail_labels else ""
-            
+
             thread_ids = headers_dict.get("X-GM-THRID", [])
             thread_id = thread_ids[0] if thread_ids else ""
-            
+
             delivered_tos = headers_dict.get("Delivered-To", [])
             delivered_to = delivered_tos[0] if delivered_tos else ""
 
@@ -181,9 +182,11 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python -m email_sort.ingest_mbox path/to/takeout.mbox [table_name]")
+        print(
+            "Usage: python -m email_sort.ingest_mbox path/to/takeout.mbox [table_name]"
+        )
         sys.exit(1)
-    
+
     mbox_path = sys.argv[1]
     table_name = sys.argv[2] if len(sys.argv) > 2 else "emails"
     parse_mbox(mbox_path, table_name)

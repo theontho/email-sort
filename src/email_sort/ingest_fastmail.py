@@ -1,4 +1,3 @@
-import os
 import requests
 import json
 import sys
@@ -52,12 +51,14 @@ def ingest_fastmail():
     batch_size = 100
     for i in range(0, len(email_ids), batch_size):
         batch_ids = email_ids[i : i + batch_size]
-        
+
         if not is_interactive:
             now = time.time()
             if now - last_update >= 60:
                 rate = processed / (now - start_time) if now > start_time else 0
-                print(f"[{time.strftime('%H:%M:%S')}] Processed {processed}/{len(email_ids)} emails. Rate: {rate:.2f} emails/s")
+                print(
+                    f"[{time.strftime('%H:%M:%S')}] Processed {processed}/{len(email_ids)} emails. Rate: {rate:.2f} emails/s"
+                )
                 last_update = now
 
         fetch_req = {
@@ -114,18 +115,18 @@ def ingest_fastmail():
             message_id = email_data["id"]
             subject = email_data.get("subject", "")
             date = email_data.get("receivedAt", "")
-            
+
             # Try to get the actual body content
             body_text = ""
             text_body_parts = email_data.get("textBody", [])
             body_values = email_data.get("bodyValues", {})
-            
+
             if text_body_parts:
                 for part in text_body_parts:
                     part_id = part.get("partId")
                     if part_id in body_values:
                         body_text += body_values[part_id].get("value", "")
-            
+
             body_html = ""
             html_body_parts = email_data.get("htmlBody", [])
             if html_body_parts:
@@ -168,9 +169,21 @@ def ingest_fastmail():
 
             cc = json.dumps(email_data.get("cc")) if email_data.get("cc") else None
             bcc = json.dumps(email_data.get("bcc")) if email_data.get("bcc") else None
-            reply_to = json.dumps(email_data.get("replyTo")) if email_data.get("replyTo") else None
-            keywords = json.dumps(email_data.get("keywords")) if email_data.get("keywords") else None
-            mailbox_ids = json.dumps(email_data.get("mailboxIds")) if email_data.get("mailboxIds") else None
+            reply_to = (
+                json.dumps(email_data.get("replyTo"))
+                if email_data.get("replyTo")
+                else None
+            )
+            keywords = (
+                json.dumps(email_data.get("keywords"))
+                if email_data.get("keywords")
+                else None
+            )
+            mailbox_ids = (
+                json.dumps(email_data.get("mailboxIds"))
+                if email_data.get("mailboxIds")
+                else None
+            )
             has_attachment = 1 if email_data.get("hasAttachment") else 0
 
             # Optimize headers

@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 def get_fastmail_count():
     token = os.environ.get("FASTMAIL_TOKEN")
     if not token:
@@ -22,9 +23,7 @@ def get_fastmail_count():
     # Query for all messages to get the total count
     query_req = {
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
-        "methodCalls": [
-            ["Email/query", {"accountId": account_id, "limit": 0}, "0"]
-        ],
+        "methodCalls": [["Email/query", {"accountId": account_id, "limit": 0}, "0"]],
     }
 
     res = requests.post(api_url, headers=headers, json=query_req)
@@ -37,18 +36,19 @@ def get_fastmail_count():
     # Also check specific folders if possible
     query_folders = {
         "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
-        "methodCalls": [
-            ["Mailbox/get", {"accountId": account_id}, "0"]
-        ],
+        "methodCalls": [["Mailbox/get", {"accountId": account_id}, "0"]],
     }
     res = requests.post(api_url, headers=headers, json=query_folders)
     res.raise_for_status()
     folders_res = res.json()
-    
+
     mailboxes = folders_res["methodResponses"][0][1].get("list", [])
     print("\nBreakdown by folder:")
     for mb in mailboxes:
-        print(f"- {mb['name']}: {mb['totalEmails']} emails ({mb['unreadEmails']} unread)")
+        print(
+            f"- {mb['name']}: {mb['totalEmails']} emails ({mb['unreadEmails']} unread)"
+        )
+
 
 if __name__ == "__main__":
     get_fastmail_count()
