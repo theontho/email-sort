@@ -37,9 +37,7 @@ def test_snippet_size(sender, subject, snippet, size):
 
     start_time = time.time()
     try:
-        response = requests.post(
-            f"{url}/chat/completions", headers=headers, json=data, timeout=60
-        )
+        response = requests.post(f"{url}/chat/completions", headers=headers, json=data, timeout=60)
         duration = time.time() - start_time
         if response.status_code == 200:
             return duration, response.json()["choices"][0]["message"]["content"].strip()
@@ -52,9 +50,7 @@ def test_snippet_size(sender, subject, snippet, size):
 def run_experiment():
     conn = get_db()
     c = conn.cursor()
-    c.execute(
-        "SELECT sender, subject, snippet FROM emails WHERE snippet IS NOT NULL LIMIT 3"
-    )
+    c.execute("SELECT sender, subject, snippet FROM emails WHERE snippet IS NOT NULL LIMIT 3")
     emails = c.fetchall()
     conn.close()
 

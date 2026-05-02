@@ -37,9 +37,7 @@ logger.setLevel(logging.INFO)
 
 log_path = get_config_dir() / "classification.log"
 file_handler = logging.FileHandler(str(log_path))
-file_handler.setFormatter(
-    logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-)
+file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
 logger.addHandler(file_handler)
 
 # Silence noisy third-party loggers
@@ -50,7 +48,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # Parse multiple servers from configuration
 def get_worker_pool():
-    worker_pool = queue.Queue()
+    worker_pool: queue.Queue[tuple[OpenAI, str, str, str]] = queue.Queue()
     total_workers = 0
     default_model = get_setting("model_name", "qwen3.5-9b")
     default_api_key = get_setting("lmstudio_key", "lm-studio")
@@ -187,9 +185,7 @@ def classify_single_email(worker_pool, row, pbar, pbar_task, table_name="emails"
 
         category, confidence, suggested_category, action = "Other", 0.0, "", ""
         if content:
-            clean_content = (
-                content.replace("`", "").replace("'", "").replace('"', "").strip()
-            )
+            clean_content = content.replace("`", "").replace("'", "").replace('"', "").strip()
             parts = [p.strip() for p in clean_content.split(",")]
 
             if len(parts) >= 1:
@@ -271,9 +267,7 @@ def classify_single_email(worker_pool, row, pbar, pbar_task, table_name="emails"
         if not stop_event.is_set():
             err_msg = f"[red]✗[/red] [dim]ID {email_id}:[/dim] {str(e)[:50]}"
             update_status(email_id, err_msg, is_finished=True)
-            logger.error(
-                f"!!! Error classifying {email_id} in {table_name} on {server_url}: {e}"
-            )
+            logger.error(f"!!! Error classifying {email_id} in {table_name} on {server_url}: {e}")
     finally:
         # ALWAYS put the client info back in the pool
         worker_pool.put(client_info)
@@ -404,15 +398,9 @@ def classify_emails(limit=None, table_name="emails", window=100, reclassify=None
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Classify emails using LLM")
-    parser.add_argument(
-        "--limit", type=int, help="Maximum number of emails to classify"
-    )
-    parser.add_argument(
-        "--table", type=str, default="all", help="Table name to classify"
-    )
-    parser.add_argument(
-        "--window", type=int, default=100, help="Number of status lines to buffer"
-    )
+    parser.add_argument("--limit", type=int, help="Maximum number of emails to classify")
+    parser.add_argument("--table", type=str, default="all", help="Table name to classify")
+    parser.add_argument("--window", type=int, default=100, help="Number of status lines to buffer")
     parser.add_argument(
         "--reclassify",
         type=str,

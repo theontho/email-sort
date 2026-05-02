@@ -85,9 +85,7 @@ def detect_languages(table_name="emails", batch_size=1000):
                 updates.append((lang, email_id))
 
             # Batch update
-            cursor.executemany(
-                f"UPDATE {table_name} SET language = ? WHERE id = ?", updates
-            )
+            cursor.executemany(f"UPDATE {table_name} SET language = ? WHERE id = ?", updates)
             conn.commit()
 
             processed += len(rows)
@@ -98,18 +96,14 @@ def detect_languages(table_name="emails", batch_size=1000):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Detect language of emails using fastText"
-    )
+    parser = argparse.ArgumentParser(description="Detect language of emails using fastText")
     parser.add_argument(
         "--table",
         type=str,
         default="all",
         help="Table to process (emails, google_emails, or all)",
     )
-    parser.add_argument(
-        "--batch", type=int, default=1000, help="Batch size for processing"
-    )
+    parser.add_argument("--batch", type=int, default=1000, help="Batch size for processing")
     args = parser.parse_args()
 
     if args.table == "all":

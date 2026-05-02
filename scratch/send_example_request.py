@@ -32,9 +32,7 @@ print(f"Request Body:\n{json.dumps(data, indent=2)}")
 print("-" * 40)
 
 try:
-    response = requests.post(
-        f"{url}/chat/completions", headers=headers, json=data, timeout=120
-    )
+    response = requests.post(f"{url}/chat/completions", headers=headers, json=data, timeout=120)
     print(f"Status Code: {response.status_code}")
     print("Raw Response Body:")
     print(response.text)

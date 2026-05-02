@@ -68,7 +68,7 @@ def parse_mbox(mbox_path, table_name="emails"):
                     if content_type == "text/plain":
                         try:
                             payload = part.get_payload(decode=True)
-                            if payload:
+                            if isinstance(payload, bytes):
                                 text = payload.decode(
                                     part.get_content_charset() or "utf-8",
                                     errors="ignore",
@@ -79,7 +79,7 @@ def parse_mbox(mbox_path, table_name="emails"):
                     elif content_type == "text/html":
                         try:
                             payload = part.get_payload(decode=True)
-                            if payload:
+                            if isinstance(payload, bytes):
                                 html = payload.decode(
                                     part.get_content_charset() or "utf-8",
                                     errors="ignore",
@@ -90,7 +90,7 @@ def parse_mbox(mbox_path, table_name="emails"):
             else:
                 try:
                     payload = message.get_payload(decode=True)
-                    if payload:
+                    if isinstance(payload, bytes):
                         text = payload.decode(
                             message.get_content_charset() or "utf-8", errors="ignore"
                         )
@@ -111,9 +111,7 @@ def parse_mbox(mbox_path, table_name="emails"):
                 if "@" in email_match:
                     sender_domain = email_match.split("@")[-1].lower()
 
-            dmarc_fail = (
-                "dmarc=fail" in str(message.get("Authentication-Results", "")).lower()
-            )
+            dmarc_fail = "dmarc=fail" in str(message.get("Authentication-Results", "")).lower()
             spf_fail = "spf=fail" in str(message.get("Received-SPF", "")).lower()
 
             cc = decode_str(message.get("Cc", ""))
@@ -121,7 +119,7 @@ def parse_mbox(mbox_path, table_name="emails"):
             reply_to = decode_str(message.get("Reply-To", ""))
 
             # Headers dict
-            headers_dict = {}
+            headers_dict: dict[str, list[str]] = {}
             for name, value in message.items():
                 if name not in headers_dict:
                     headers_dict[name] = []
@@ -182,9 +180,7 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print(
-            "Usage: python -m email_sort.ingest_mbox path/to/takeout.mbox [table_name]"
-        )
+        print("Usage: python -m email_sort.ingest_mbox path/to/takeout.mbox [table_name]")
         sys.exit(1)
 
     mbox_path = sys.argv[1]
