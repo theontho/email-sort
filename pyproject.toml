@@ -31,6 +31,13 @@ dev = [
 [project.scripts]
 email-sort = "email_sort.cli:main"
 
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [tool.ruff]
 line-length = 100
 
