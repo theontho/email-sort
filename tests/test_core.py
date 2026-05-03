@@ -1,10 +1,12 @@
 import email
 from email import policy
 
+import pytest
+
+from email_sort.classify import parse_classification
+from email_sort.config import AppConfig
 from email_sort.db import EMAIL_TABLE, create_email_table
 from email_sort.email_parse import message_record, upsert_email
-from email_sort.classify import parse_classification
-from email_sort.ingest_imap import _as_bool, _as_list
 from email_sort.sender_analysis import _addresses_contain_domain
 from email_sort.unsubscribe_agent import _is_safe_url
 
@@ -106,12 +108,16 @@ def test_parse_classification_normalizes_case():
     )
 
 
-def test_imap_env_value_parsing():
-    assert _as_bool("false") is False
-    assert _as_bool("true") is True
-    assert _as_list("INBOX,Archive") == ["INBOX", "Archive"]
-
-
 def test_domain_matching_uses_parsed_addresses():
     assert _addresses_contain_domain("User <user@mail.com>", "mail.com") is True
     assert _addresses_contain_domain("User <user@gmail.com>", "mail.com") is False
+
+
+def test_typed_config_rejects_unknown_keys():
+    with pytest.raises(ValueError):
+        AppConfig.model_validate({"general": {"unknown": True}})
+
+
+def test_typed_config_requires_list_shapes():
+    with pytest.raises(ValueError):
+        AppConfig.model_validate({"imap": {"folders": "INBOX,Archive"}})

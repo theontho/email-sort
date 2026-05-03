@@ -3,8 +3,8 @@ import ipaddress
 import json
 import random
 import re
-import socket
 import smtplib
+import socket
 import time
 from datetime import datetime, timedelta
 from email.message import EmailMessage
@@ -15,7 +15,6 @@ from bs4 import BeautifulSoup
 
 from email_sort.config import get_config_dir, get_section_setting
 from email_sort.db import EMAIL_TABLE, get_db
-
 
 PROOF_DIR = get_config_dir() / "unsubscribe_proofs"
 CLICK_TEXT = ("unsubscribe", "confirm", "opt out", "remove")
@@ -53,8 +52,6 @@ def extract_unsubscribe_urls_from_html(html: str | None) -> list[str]:
 def _safe_sender(sender: str) -> bool:
     sender_lower = (sender or "").lower()
     configured = get_section_setting("unsubscribe", "safe_senders", [])
-    if isinstance(configured, str):
-        configured = [item.strip() for item in configured.split(",") if item.strip()]
     patterns = [str(item).lower() for item in configured]
     return any(re.search(pattern, sender_lower) for pattern in patterns)
 

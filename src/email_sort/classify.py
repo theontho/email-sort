@@ -8,17 +8,16 @@ from concurrent.futures import ThreadPoolExecutor
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from rich.console import Console
+from rich.layout import Layout
+from rich.live import Live
+from rich.table import Table
 
-from email_sort.config import get_setting, get_servers, get_config_dir
+from email_sort.config import get_config_dir, get_servers, get_setting
 from email_sort.corrections import apply_sender_prefilters
 from email_sort.db import EMAIL_TABLE, get_db
 from email_sort.progress import make_progress
 from email_sort.sender_analysis import apply_has_user_reply_prefilter
-
-from rich.live import Live
-from rich.table import Table
-from rich.console import Console
-from rich.layout import Layout
 
 load_dotenv()
 

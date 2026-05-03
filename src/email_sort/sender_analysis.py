@@ -1,7 +1,7 @@
 import email.utils
 import math
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from email_sort.config import get_setting
 from email_sort.db import EMAIL_TABLE, get_db
@@ -19,7 +19,7 @@ def _parse_date(value: str | None) -> datetime | None:
         except Exception:
             return None
     if parsed and parsed.tzinfo:
-        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed.astimezone(UTC).replace(tzinfo=None)
     return parsed
 
 

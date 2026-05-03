@@ -24,7 +24,9 @@ dependencies = [
 [dependency-groups]
 dev = [
     "mypy>=1.20.2",
+    "pre-commit>=4.0.0",
     "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
     "ruff>=0.15.12",
     "types-requests>=2.33.0.20260408",
 ]
@@ -41,8 +43,33 @@ build-backend = "hatchling.build"
 
 [tool.ruff]
 line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "N", "S"]
+ignore = [
+    "E501", # line too long (handled by formatter)
+    "S608", # SQL strings use internal constant table names, not user input
+    "S110", # some best-effort parsing/browser cleanup intentionally ignores failures
+    "S112", # malformed MIME parts are skipped during ingestion
+    "S310", # language model download uses a fixed HTTPS URL
+    "S311", # retry jitter is not security-sensitive randomness
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
 
 [tool.mypy]
 python_version = "3.14"
 ignore_missing_imports = true
 check_untyped_defs = true
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]

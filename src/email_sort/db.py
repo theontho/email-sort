@@ -4,7 +4,6 @@ from pathlib import Path
 
 from email_sort.config import get_config_dir, get_setting
 
-
 EMAIL_TABLE = "emails"
 EMAIL_TABLES = (EMAIL_TABLE,)
 LEGACY_EMAIL_TABLES = ("fastmail", "google_emails")

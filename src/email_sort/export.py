@@ -4,7 +4,6 @@ from pathlib import Path
 
 from email_sort.db import EMAIL_TABLE, get_db
 
-
 OUT_DIR = Path("out")
 
 

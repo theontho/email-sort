@@ -10,7 +10,6 @@ from email_sort.db import (
     table_exists,
 )
 
-
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
