@@ -7,6 +7,7 @@ A comprehensive, automated email sorting and classification pipeline designed to
 1. [uv](https://github.com/astral-sh/uv) installed.
 2. A local or remote LLM server exposing an OpenAI-compatible API (e.g., LM-Studio running locally).
 3. A Google Takeout `.mbox` export, OR a Fastmail API token.
+4. Optional for browser-based unsubscribe fallback: Playwright Chromium installed with `uv run playwright install chromium`.
 
 ## Installation
 

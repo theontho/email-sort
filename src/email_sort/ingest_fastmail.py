@@ -1,13 +1,60 @@
 import requests
 import json
+import re
 import sys
 import time
-from tqdm import tqdm
-from email_sort.db import get_db
+
 from email_sort.config import get_setting
+from email_sort.db import get_db, init_db
+from email_sort.email_parse import sqlite_safe_text
+from email_sort.progress import make_progress
 
 
-def ingest_fastmail():
+def _first_header(headers_list, name):
+    lower_name = name.lower()
+    return next(
+        (h.get("value", "") for h in headers_list if h.get("name", "").lower() == lower_name), ""
+    )
+
+
+def _auth_flag(auth_results: str, name: str, result: str) -> bool:
+    return bool(re.search(rf"\b{re.escape(name)}\s*=\s*{re.escape(result)}\b", auth_results, re.I))
+
+
+def _fetch_all_email_ids(api_url: str, headers: dict, account_id: str) -> list[str]:
+    email_ids: list[str] = []
+    position = 0
+    total = None
+    while True:
+        query_req = {
+            "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+            "methodCalls": [
+                [
+                    "Email/query",
+                    {"accountId": account_id, "position": position, "limit": 5000},
+                    "0",
+                ]
+            ],
+        }
+        res = requests.post(api_url, headers=headers, json=query_req)
+        res.raise_for_status()
+        query_res = res.json()["methodResponses"][0][1]
+        batch = query_res.get("ids", [])
+        if total is None:
+            total = query_res.get("total")
+        if not batch:
+            break
+        email_ids.extend(batch)
+        position += len(batch)
+        if total is not None and position >= total:
+            break
+    if total is not None and len(email_ids) != total:
+        print(f"Warning: Fastmail reported {total} emails but returned {len(email_ids)} IDs")
+    return email_ids
+
+
+def ingest_fastmail(source: str = "fastmail"):
+    init_db()
     token = get_setting("fastmail_token")
     if not token:
         print("Please set FASTMAIL_TOKEN environment variable.")
@@ -23,16 +70,7 @@ def ingest_fastmail():
     account_id = session["primaryAccounts"]["urn:ietf:params:jmap:mail"]
 
     print("Querying Fastmail for message IDs...")
-    query_req = {
-        "using": ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
-        "methodCalls": [["Email/query", {"accountId": account_id, "limit": 50000}, "0"]],
-    }
-
-    res = requests.post(api_url, headers=headers, json=query_req)
-    res.raise_for_status()
-    query_res = res.json()
-
-    email_ids = query_res["methodResponses"][0][1]["ids"]
+    email_ids = _fetch_all_email_ids(api_url, headers, account_id)
     print(f"Found {len(email_ids)} emails. Fetching details...")
 
     conn = get_db()
@@ -40,7 +78,9 @@ def ingest_fastmail():
 
     is_interactive = sys.stdout.isatty()
     if is_interactive:
-        pbar = tqdm(total=len(email_ids), desc="Ingesting Fastmail")
+        progress = make_progress()
+        progress.start()
+        progress_task = progress.add_task("Ingesting Fastmail", total=len(email_ids))
     else:
         start_time = time.time()
         last_update = start_time
@@ -109,8 +149,7 @@ def ingest_fastmail():
             break
 
         for email_data in emails_data:
-            source = "fastmail"
-            message_id = email_data["id"]
+            provider_id = email_data["id"]
             subject = email_data.get("subject", "")
             date = email_data.get("receivedAt", "")
 
@@ -146,20 +185,17 @@ def ingest_fastmail():
 
             # Extract headers from the list
             headers_list = email_data.get("headers", [])
-            list_unsubscribe = next(
-                (h["value"] for h in headers_list if h["name"].lower() == "list-unsubscribe"),
-                "",
-            )
-            list_unsubscribe_post = next(
-                (h["value"] for h in headers_list if h["name"].lower() == "list-unsubscribe-post"),
-                "",
-            )
-            auth_results = next(
-                (h["value"] for h in headers_list if h["name"].lower() == "authentication-results"),
-                "",
-            ).lower()
-            dmarc_fail = "dmarc=fail" in auth_results
-            spf_fail = "spf=fail" in auth_results
+            list_unsubscribe = _first_header(headers_list, "list-unsubscribe")
+            list_unsubscribe_post = _first_header(headers_list, "list-unsubscribe-post")
+            message_id = _first_header(headers_list, "message-id")
+            auth_results = _first_header(headers_list, "authentication-results")
+            arc_auth_results = _first_header(headers_list, "arc-authentication-results")
+            arc_seal = _first_header(headers_list, "arc-seal")
+            dmarc_fail = _auth_flag(auth_results, "dmarc", "fail")
+            spf_fail = _auth_flag(auth_results, "spf", "fail")
+            dkim_pass = _auth_flag(auth_results, "dkim", "pass")
+            has_arc = bool(arc_seal)
+            dmarc_arc_override = has_arc and _auth_flag(arc_auth_results, "dmarc", "pass")
 
             cc = json.dumps(email_data.get("cc")) if email_data.get("cc") else None
             bcc = json.dumps(email_data.get("bcc")) if email_data.get("bcc") else None
@@ -186,10 +222,16 @@ def ingest_fastmail():
                 # Use INSERT OR REPLACE to update existing snippets
                 c.execute(
                     """
-                    INSERT INTO fastmail 
-                    (source, message_id, sender, sender_domain, to_address, subject, date, snippet, body_text, body_html, list_unsubscribe, list_unsubscribe_post, dmarc_fail, spf_fail, cc, bcc, reply_to, keywords, mailbox_ids, has_attachment, headers)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(message_id) DO UPDATE SET 
+                    INSERT INTO emails 
+                    (source, provider_id, message_id, sender, sender_domain, to_address, subject, date, snippet, body_text, body_html, list_unsubscribe, list_unsubscribe_post, dmarc_fail, spf_fail, cc, bcc, reply_to, keywords, mailbox_ids, has_attachment, headers, arc_auth_results, has_arc, dkim_pass, dmarc_arc_override)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(source, provider_id) DO UPDATE SET 
+                        message_id=excluded.message_id,
+                        sender=excluded.sender,
+                        sender_domain=excluded.sender_domain,
+                        to_address=excluded.to_address,
+                        subject=excluded.subject,
+                        date=excluded.date,
                         snippet=excluded.snippet,
                         body_text=excluded.body_text,
                         body_html=excluded.body_html,
@@ -203,10 +245,15 @@ def ingest_fastmail():
                         keywords=excluded.keywords,
                         mailbox_ids=excluded.mailbox_ids,
                         has_attachment=excluded.has_attachment,
-                        headers=excluded.headers
+                        headers=excluded.headers,
+                        arc_auth_results=excluded.arc_auth_results,
+                        has_arc=excluded.has_arc,
+                        dkim_pass=excluded.dkim_pass,
+                        dmarc_arc_override=excluded.dmarc_arc_override
                 """,
                     (
                         source,
+                        provider_id,
                         message_id,
                         sender,
                         sender_domain,
@@ -226,21 +273,25 @@ def ingest_fastmail():
                         keywords,
                         mailbox_ids,
                         has_attachment,
-                        headers_json,
+                        sqlite_safe_text(headers_json),
+                        sqlite_safe_text(arc_auth_results),
+                        int(has_arc),
+                        int(dkim_pass),
+                        int(dmarc_arc_override),
                     ),
                 )
             except Exception as e:
                 print(f"Error inserting/updating {message_id}: {e}")
 
             if is_interactive:
-                pbar.update(1)
+                progress.advance(progress_task)
             else:
                 processed += 1
 
         conn.commit()
 
     if is_interactive:
-        pbar.close()
+        progress.stop()
 
     conn.close()
     print("Fastmail ingestion complete.")

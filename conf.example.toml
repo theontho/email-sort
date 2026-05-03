@@ -8,6 +8,9 @@ fastmail_token = "your_fastmail_token_here"
 # Default LM Studio / LiteLLM API Key if needed
 # lmstudio_key = "lm-studio"
 
+# List of personal domains/emails used to filter "Not for me" emails
+my_domains = ["icloud.com", "appleid.com", "gmail.com"]
+
 [[servers]]
 name = "Local Machine"
 url = "http://localhost:1234/v1"
@@ -22,5 +25,28 @@ workers = 4
 # workers = 8
 # disabled = true
 
-# List of personal domains/emails used to filter "Not for me" emails
-my_domains = ["icloud.com", "appleid.com", "gmail.com"]
+[imap]
+# host = "imap.example.com"
+# port = 993
+# username = "you@example.com"
+# password = "app-password"
+use_ssl = true
+folders = ["INBOX"]
+
+[sieve]
+# host = "sieve.example.com"
+port = 4190
+# username = "you@example.com"
+# password = "app-password"
+
+[unsubscribe]
+max_per_hour = 10
+max_per_day = 50
+safe_senders = ["bank", "security", "2fa", "password"]
+
+[smtp]
+# Required only for mailto unsubscribe fallback.
+# host = "smtp.example.com"
+# port = 465
+# username = "you@example.com"
+# password = "app-password"

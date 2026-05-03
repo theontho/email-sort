@@ -19,3 +19,6 @@ models/
 lid.176.bin
 conf.toml
 .DS_Store
+ingestion_dumps/
+scratch/
+out/

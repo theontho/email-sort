@@ -1,139 +1,129 @@
 import csv
-import requests
-from email_sort.db import get_db
+import json
+from pathlib import Path
+
+from email_sort.db import EMAIL_TABLE, get_db
 
 
-def execute_unsubscribe(email_id, list_unsub, list_unsub_post):
-    """
-    Implements RFC 8058 and fallbacks.
-    """
-    if not list_unsub:
-        return False
-
-    # RFC 8058: Check for HTTPS and List-Unsubscribe-Post: List-Unsubscribe=One-Click
-    if "List-Unsubscribe=One-Click" in (list_unsub_post or ""):
-        # Extract HTTPS URL from list_unsub
-        # list_unsub can be <mailto:xxx>, <https://xxx>
-        import re
-
-        urls = re.findall(r"<(https?://[^>]+)>", list_unsub)
-        if urls:
-            url = urls[0]
-            try:
-                print(f"Executing RFC 8058 POST to {url}")
-                res = requests.post(
-                    url,
-                    data={"List-Unsubscribe": "One-Click"},
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
-                    timeout=10,
-                )
-                if res.status_code < 300:
-                    return True
-            except Exception as e:
-                print(f"Error in RFC 8058 POST: {e}")
-
-    # Fallback 1: HTTP GET
-    import re
-
-    urls = re.findall(r"<(https?://[^>]+)>", list_unsub)
-    if urls:
-        url = urls[0]
-        try:
-            print(f"Executing HTTP GET fallback to {url}")
-            res = requests.get(url, timeout=10)
-            if res.status_code < 300:
-                return True
-        except Exception as e:
-            print(f"Error in HTTP GET: {e}")
-
-    # Fallback 2: Mailto (not implemented here as it requires sending mail)
-    return False
+OUT_DIR = Path("out")
 
 
-def export_results():
+def export_ban_list(path: str = "out/ban_list.csv") -> None:
+    OUT_DIR.mkdir(exist_ok=True)
     conn = get_db()
-    c = conn.cursor()
-
-    print("Generating sender_reputation.csv...")
-    c.execute("""
-        SELECT sender_domain,
-               COUNT(*) as total_emails,
-               AVG(CASE WHEN category IN ('Spam','Promotional') THEN 1.0 ELSE 0.0 END) as spam_ratio,
-               SUM(dmarc_fail) as dmarc_failures,
-               MIN(date) as first_seen,
-               MAX(date) as last_seen
-        FROM fastmail
-        GROUP BY sender_domain
-        ORDER BY total_emails DESC
-    """)
-    with open("sender_reputation.csv", "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            [
-                "Domain",
-                "Total Emails",
-                "Spam/Promo Ratio",
-                "DMARC Failures",
-                "First Seen",
-                "Last Seen",
-            ]
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT sender_domain,
+                   CASE
+                       WHEN language != 'en' THEN 'Foreign Language (' || language || ')'
+                       WHEN is_not_for_me = 1 THEN 'Not for me'
+                       WHEN COALESCE(category, heuristic_category) = 'Spam' THEN 'Spam'
+                       WHEN dmarc_fail = 1 AND dmarc_arc_override = 0 THEN 'Authentication Failed'
+                       ELSE 'Unknown'
+                   END AS reason,
+                   COUNT(*) AS count
+            FROM {EMAIL_TABLE}
+            WHERE language != 'en'
+               OR is_not_for_me = 1
+               OR COALESCE(category, heuristic_category) = 'Spam'
+               OR (dmarc_fail = 1 AND dmarc_arc_override = 0)
+            GROUP BY sender_domain, reason
+            ORDER BY count DESC
+            """
         )
-        for row in c.fetchall():
+        with open(path, "w", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow(["sender_domain", "reason", "count"])
+            for row in cursor.fetchall():
+                writer.writerow([row["sender_domain"], row["reason"], row["count"]])
+    finally:
+        conn.close()
+    print(f"Wrote {path}")
+
+
+def export_unsubscribe_list(path: str = "out/unsubscribe_list.csv") -> None:
+    OUT_DIR.mkdir(exist_ok=True)
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT sender, sender_domain, COALESCE(category, heuristic_category) AS category,
+                   MIN(list_unsubscribe) AS list_unsubscribe,
+                   MIN(body_unsubscribe_links) AS body_unsubscribe_links,
+                   MAX(is_digest) AS is_digest,
+                   COUNT(*) AS count
+            FROM {EMAIL_TABLE}
+            WHERE (list_unsubscribe IS NOT NULL OR body_unsubscribe_links IS NOT NULL)
+              AND (COALESCE(category, heuristic_category) IN ('Promotional','Newsletter','Spam','Social','Tech','Shopping','Health','Automated') OR is_digest = 1)
+            GROUP BY sender, sender_domain, COALESCE(category, heuristic_category)
+            ORDER BY is_digest DESC, count DESC
+            """
+        )
+        with open(path, "w", newline="") as file:
+            writer = csv.writer(file)
             writer.writerow(
                 [
-                    row["sender_domain"],
-                    row["total_emails"],
-                    f"{row['spam_ratio']:.2f}",
-                    row["dmarc_failures"],
-                    row["first_seen"],
-                    row["last_seen"],
+                    "sender",
+                    "sender_domain",
+                    "category",
+                    "is_digest",
+                    "count",
+                    "list_unsubscribe",
+                    "body_links",
                 ]
             )
-
-    print("Generating ban_list.csv...")
-    c.execute("""
-        SELECT sender, sender_domain, language, is_not_for_me, category, dmarc_fail
-        FROM fastmail
-        WHERE language != 'en' OR is_not_for_me = 1 OR category = 'Spam' OR dmarc_fail = 1
-        GROUP BY sender_domain
-        ORDER BY count(id) DESC
-    """)
-    with open("ban_list.csv", "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Sender Domain", "Reason"])
-        for row in c.fetchall():
-            reason = "Spam"
-            if row["language"] != "en":
-                reason = f"Foreign Language ({row['language']})"
-            elif row["is_not_for_me"]:
-                reason = "Not for me"
-            elif row["dmarc_fail"]:
-                reason = "Authentication Failed"
-            writer.writerow([row["sender_domain"], reason])
-
-    print("Generating unsubscribe_list.csv...")
-    c.execute("""
-        SELECT id, sender, list_unsubscribe, list_unsubscribe_post, category, body_unsubscribe_links
-        FROM fastmail
-        WHERE (list_unsubscribe != '' OR body_unsubscribe_links IS NOT NULL)
-        AND category IN ('Promotional', 'Newsletter', 'Spam', 'Social', 'Tech', 'Shopping', 'Health')
-        GROUP BY sender
-    """)
-    with open("unsubscribe_list.csv", "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Sender", "Category", "Unsubscribe Header", "Body Links"])
-        for row in c.fetchall():
-            writer.writerow(
-                [
-                    row["sender"],
-                    row["category"],
-                    row["list_unsubscribe"],
-                    row["body_unsubscribe_links"],
-                ]
-            )
-
-    print("Export complete.")
+            for row in cursor.fetchall():
+                writer.writerow(
+                    [
+                        row["sender"],
+                        row["sender_domain"],
+                        row["category"],
+                        row["is_digest"],
+                        row["count"],
+                        row["list_unsubscribe"],
+                        row["body_unsubscribe_links"],
+                    ]
+                )
+    finally:
+        conn.close()
+    print(f"Wrote {path}")
 
 
-if __name__ == "__main__":
-    export_results()
+def export_sender_reputation(path: str = "out/sender_reputation.csv") -> None:
+    OUT_DIR.mkdir(exist_ok=True)
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM sender_stats ORDER BY total_emails DESC")
+        rows = cursor.fetchall()
+        with open(path, "w", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow([column[0] for column in cursor.description])
+            for row in rows:
+                writer.writerow([row[column[0]] for column in cursor.description])
+    finally:
+        conn.close()
+    print(f"Wrote {path}")
+
+
+def export_corrections(path: str = "out/corrections.jsonl") -> None:
+    OUT_DIR.mkdir(exist_ok=True)
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM corrections ORDER BY corrected_at DESC")
+        with open(path, "w") as file:
+            for row in cursor.fetchall():
+                file.write(json.dumps(dict(row), sort_keys=True) + "\n")
+    finally:
+        conn.close()
+    print(f"Wrote {path}")
+
+
+def export_results() -> None:
+    export_sender_reputation()
+    export_ban_list()
+    export_unsubscribe_list()
