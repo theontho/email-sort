@@ -59,6 +59,7 @@ def parse_mbox(mbox_path, table_name="emails"):
             to_address = decode_str(message.get("To", ""))
             date = decode_str(message.get("Date", ""))
             list_unsubscribe = decode_str(message.get("List-Unsubscribe", ""))
+            list_unsubscribe_post = decode_str(message.get("List-Unsubscribe-Post", ""))
 
             body_text = ""
             body_html = ""
@@ -140,8 +141,8 @@ def parse_mbox(mbox_path, table_name="emails"):
                 c.execute(
                     f"""
                     INSERT OR IGNORE INTO {table_name} 
-                    (source, message_id, sender, sender_domain, to_address, subject, date, snippet, body_text, body_html, list_unsubscribe, dmarc_fail, spf_fail, cc, bcc, reply_to, headers, mailbox_ids, thread_id, delivered_to)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (source, message_id, sender, sender_domain, to_address, subject, date, snippet, body_text, body_html, list_unsubscribe, list_unsubscribe_post, dmarc_fail, spf_fail, cc, bcc, reply_to, headers, mailbox_ids, thread_id, delivered_to)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
                         source,
@@ -155,6 +156,7 @@ def parse_mbox(mbox_path, table_name="emails"):
                         body_text,
                         body_html,
                         list_unsubscribe,
+                        list_unsubscribe_post,
                         dmarc_fail,
                         spf_fail,
                         cc,

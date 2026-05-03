@@ -150,6 +150,10 @@ def ingest_fastmail():
                 (h["value"] for h in headers_list if h["name"].lower() == "list-unsubscribe"),
                 "",
             )
+            list_unsubscribe_post = next(
+                (h["value"] for h in headers_list if h["name"].lower() == "list-unsubscribe-post"),
+                "",
+            )
             auth_results = next(
                 (h["value"] for h in headers_list if h["name"].lower() == "authentication-results"),
                 "",
@@ -183,13 +187,14 @@ def ingest_fastmail():
                 c.execute(
                     """
                     INSERT INTO emails 
-                    (source, message_id, sender, sender_domain, to_address, subject, date, snippet, body_text, body_html, list_unsubscribe, dmarc_fail, spf_fail, cc, bcc, reply_to, keywords, mailbox_ids, has_attachment, headers)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (source, message_id, sender, sender_domain, to_address, subject, date, snippet, body_text, body_html, list_unsubscribe, list_unsubscribe_post, dmarc_fail, spf_fail, cc, bcc, reply_to, keywords, mailbox_ids, has_attachment, headers)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(message_id) DO UPDATE SET 
                         snippet=excluded.snippet,
                         body_text=excluded.body_text,
                         body_html=excluded.body_html,
                         list_unsubscribe=excluded.list_unsubscribe,
+                        list_unsubscribe_post=excluded.list_unsubscribe_post,
                         dmarc_fail=excluded.dmarc_fail,
                         spf_fail=excluded.spf_fail,
                         cc=excluded.cc,
@@ -212,6 +217,7 @@ def ingest_fastmail():
                         body_text,
                         body_html,
                         list_unsubscribe,
+                        list_unsubscribe_post,
                         dmarc_fail,
                         spf_fail,
                         cc,
