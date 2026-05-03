@@ -25,13 +25,13 @@ def _get_config_path() -> Path:
     """
     env_path = os.environ.get("EMAIL_SORT_CONFIG")
     if env_path:
-        return Path(env_path)
+        return Path(env_path).expanduser().resolve()
 
     local_path = Path("conf.toml")
     if local_path.exists():
-        return local_path
+        return local_path.resolve()
 
-    return get_default_config_dir() / "conf.toml"
+    return (get_default_config_dir() / "conf.toml").resolve()
 
 
 CONF_PATH = _get_config_path()
@@ -88,6 +88,7 @@ def get_servers() -> List[Dict[str, Any]]:
 
 
 def get_config_dir() -> Path:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     return CONFIG_DIR
 
 

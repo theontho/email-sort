@@ -1,10 +1,10 @@
 import email.utils
 import math
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 
 from email_sort.config import get_setting
-from email_sort.db import EMAIL_TABLES, get_db
+from email_sort.db import EMAIL_TABLE, get_db
 
 
 def _parse_date(value: str | None) -> datetime | None:
@@ -15,11 +15,17 @@ def _parse_date(value: str | None) -> datetime | None:
     except ValueError:
         try:
             parsed = email.utils.parsedate_to_datetime(value)
-            if parsed and parsed.tzinfo:
-                return parsed.replace(tzinfo=None)
-            return parsed
+            pass
         except Exception:
             return None
+    if parsed and parsed.tzinfo:
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _addresses_contain_domain(value: str, domain: str) -> bool:
+    addresses = [addr.lower() for _, addr in email.utils.getaddresses([value])]
+    return any(addr.endswith(f"@{domain}") for addr in addresses)
 
 
 def _entropy(values: list[int]) -> float:
@@ -43,9 +49,11 @@ def _has_user_reply(sender_domain: str, rows: list[dict]) -> bool:
     my_domains = [str(domain).lower() for domain in get_setting("my_domains", [])]
     for row in rows:
         to_address = (row.get("to_address") or "").lower()
-        if sender_domain in to_address:
+        if _addresses_contain_domain(to_address, sender_domain):
             return True
-        if row.get("sender_domain") in my_domains and sender_domain in to_address:
+        if row.get("sender_domain") in my_domains and _addresses_contain_domain(
+            to_address, sender_domain
+        ):
             return True
     return False
 
@@ -68,7 +76,7 @@ def _compute(scope: str, key: str, rows: list[dict]) -> dict:
     hours = [date.hour for date in dates]
     sender_domain = rows[0].get("sender_domain") or (key if scope == "domain" else "")
     total = len(rows)
-    spam_count = sum(1 for row in rows if row.get("category") in {"Spam", "Promotional"})
+    spam_count = sum(1 for row in rows if row.get("category") == "Spam")
     promo_count = sum(1 for row in rows if row.get("category") == "Promotional")
     dmarc_failures = sum(1 for row in rows if row.get("dmarc_fail"))
     weekdays = [date.weekday() for date in dates]
@@ -93,15 +101,15 @@ def _compute(scope: str, key: str, rows: list[dict]) -> dict:
 
 def _load_rows(cursor) -> list[dict]:
     rows: list[dict] = []
-    for table_name in EMAIL_TABLES:
-        cursor.execute(
-            f"""
-            SELECT sender, sender_domain, to_address, subject, date, category, dmarc_fail
-            FROM {table_name}
-            WHERE sender IS NOT NULL AND sender != ''
-            """
-        )
-        rows.extend(dict(row) for row in cursor.fetchall())
+    cursor.execute(
+        f"""
+        SELECT sender, sender_domain, to_address, subject, date,
+               COALESCE(category, heuristic_category) AS category, dmarc_fail
+        FROM {EMAIL_TABLE}
+        WHERE sender IS NOT NULL AND sender != ''
+        """
+    )
+    rows.extend(dict(row) for row in cursor.fetchall())
     return rows
 
 
@@ -188,21 +196,25 @@ def analyze_all_senders() -> dict:
         conn.close()
 
 
-def apply_has_user_reply_prefilter(table_name: str) -> int:
+def apply_has_user_reply_prefilter(source: str | None = None) -> int:
     conn = get_db()
     try:
         cursor = conn.cursor()
+        source_filter = "AND source = ?" if source else ""
+        params = (source,) if source else ()
         cursor.execute(
             f"""
-            UPDATE {table_name}
+            UPDATE {EMAIL_TABLE}
             SET category = 'Personal', action = 'Mandatory', confidence = COALESCE(confidence, 1.0)
             WHERE (category IS NULL OR category = '')
+              {source_filter}
               AND EXISTS (
                   SELECT 1 FROM sender_stats s
                   WHERE s.has_user_reply = 1
-                    AND (s.sender = lower({table_name}.sender) OR s.sender = '@' || lower({table_name}.sender_domain))
+                    AND (s.sender = lower({EMAIL_TABLE}.sender) OR s.sender = '@' || lower({EMAIL_TABLE}.sender_domain))
               )
-            """
+            """,
+            params,
         )
         changed = cursor.rowcount
         conn.commit()

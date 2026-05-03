@@ -10,12 +10,24 @@ from email_sort.email_parse import message_record, upsert_email
 from email_sort.progress import make_progress
 
 
+def _as_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _as_list(value) -> list[str]:
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return list(value)
+
+
 def _connect():
     host = get_section_setting("imap", "host")
     port = int(get_section_setting("imap", "port", 993))
     username = get_section_setting("imap", "username")
     password = get_section_setting("imap", "password")
-    use_ssl = bool(get_section_setting("imap", "use_ssl", True))
+    use_ssl = _as_bool(get_section_setting("imap", "use_ssl", True))
     if not host or not username or not password:
         raise ValueError("Missing [imap] host, username, or password in config")
     client = imaplib.IMAP4_SSL(host, port) if use_ssl else imaplib.IMAP4(host, port)
@@ -23,9 +35,9 @@ def _connect():
     return client
 
 
-def ingest_imap(watch: bool = False, table_name: str = "fastmail") -> None:
+def ingest_imap(watch: bool = False, source: str = "imap") -> None:
     init_db()
-    folders = get_section_setting("imap", "folders", ["INBOX"])
+    folders = _as_list(get_section_setting("imap", "folders", ["INBOX"]))
     client = _connect()
     conn = get_db()
     cursor = conn.cursor()
@@ -41,7 +53,17 @@ def ingest_imap(watch: bool = False, table_name: str = "fastmail") -> None:
                 if status != "OK":
                     print(f"Could not search IMAP folder {folder}")
                     continue
-                message_ids = data[0].split()
+                all_message_ids = data[0].split()
+                cursor.execute(
+                    "SELECT provider_id FROM emails WHERE source = ? AND provider_id LIKE ?",
+                    (source, f"{folder}:%"),
+                )
+                seen = {str(row["provider_id"]).split(":", 1)[1] for row in cursor.fetchall()}
+                message_ids = [
+                    message_id
+                    for message_id in all_message_ids
+                    if message_id.decode(errors="replace") not in seen
+                ]
                 last_update = time.time()
                 if sys.stdout.isatty():
                     progress = make_progress()
@@ -53,8 +75,9 @@ def ingest_imap(watch: bool = False, table_name: str = "fastmail") -> None:
                                 message = email.message_from_bytes(
                                     fetched[0][1], policy=policy.default
                                 )
-                                record = message_record(message, "imap")
-                                upsert_email(cursor, table_name, record)
+                                provider_id = f"{folder}:{message_num.decode(errors='replace')}"
+                                record = message_record(message, source, provider_id=provider_id)
+                                upsert_email(cursor, record)
                                 processed += 1
                             progress.advance(task)
                             if processed % 500 == 0:
@@ -65,8 +88,9 @@ def ingest_imap(watch: bool = False, table_name: str = "fastmail") -> None:
                         if status != "OK" or not fetched or not isinstance(fetched[0], tuple):
                             continue
                         message = email.message_from_bytes(fetched[0][1], policy=policy.default)
-                        record = message_record(message, "imap")
-                        upsert_email(cursor, table_name, record)
+                        provider_id = f"{folder}:{message_num.decode(errors='replace')}"
+                        record = message_record(message, source, provider_id=provider_id)
+                        upsert_email(cursor, record)
                         processed += 1
                         if processed % 500 == 0:
                             conn.commit()

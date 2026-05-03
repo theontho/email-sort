@@ -1,8 +1,11 @@
 import email.utils
+import hashlib
 import json
 import re
 from email.header import decode_header, make_header
 from email.message import Message
+
+from email_sort.db import EMAIL_TABLE
 
 
 def _safe_header_value(value) -> str:
@@ -87,7 +90,7 @@ def extract_body(message: Message) -> tuple[str, str, int]:
     return body_text, body_html, has_attachment
 
 
-def message_record(message: Message, source: str) -> dict:
+def message_record(message: Message, source: str, provider_id: str | None = None) -> dict:
     headers = headers_dict(message)
     sender, sender_domain = sender_parts(get_header(headers, "from"))
     auth_results = get_header(headers, "authentication-results")
@@ -95,12 +98,15 @@ def message_record(message: Message, source: str) -> dict:
     has_arc = bool(get_header(headers, "arc-seal"))
     body_text, body_html, has_attachment = extract_body(message)
     message_id = get_header(headers, "message-id")
-    if not message_id:
-        message_id = (
-            f"{source}:{get_header(headers, 'date')}:{sender}:{get_header(headers, 'subject')}"
-        )
+    if not provider_id:
+        try:
+            raw_payload = message.as_bytes()
+        except Exception:
+            raw_payload = repr(sorted(headers.items())).encode("utf-8", errors="replace")
+        provider_id = message_id or hashlib.sha256(raw_payload).hexdigest()
     return {
         "source": source,
+        "provider_id": sqlite_safe_text(provider_id),
         "message_id": sqlite_safe_text(message_id),
         "sender": sender,
         "sender_domain": sender_domain,
@@ -132,9 +138,10 @@ def message_record(message: Message, source: str) -> dict:
     }
 
 
-def upsert_email(cursor, table_name: str, record: dict) -> None:
+def upsert_email(cursor, record: dict, table_name: str = EMAIL_TABLE) -> None:
     fields = [
         "source",
+        "provider_id",
         "message_id",
         "sender",
         "sender_domain",
@@ -163,13 +170,13 @@ def upsert_email(cursor, table_name: str, record: dict) -> None:
     ]
     placeholders = ", ".join("?" for _ in fields)
     update_clause = ", ".join(
-        f"{field}=excluded.{field}" for field in fields if field != "message_id"
+        f"{field}=excluded.{field}" for field in fields if field not in {"source", "provider_id"}
     )
     cursor.execute(
         f"""
         INSERT INTO {table_name} ({", ".join(fields)})
         VALUES ({placeholders})
-        ON CONFLICT(message_id) DO UPDATE SET {update_clause}
+        ON CONFLICT(source, provider_id) DO UPDATE SET {update_clause}
         """,
         [sqlite_safe_text(record.get(field)) for field in fields],
     )

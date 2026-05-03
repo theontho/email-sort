@@ -1,23 +1,19 @@
 import json
 from collections.abc import Iterable
 
-from email_sort.db import EMAIL_TABLES, get_db
+from email_sort.db import EMAIL_TABLE, get_db
 
 
 def _find_email(cursor, message_id: str):
-    for table_name in EMAIL_TABLES:
-        cursor.execute(
-            f"""
-            SELECT id, message_id, sender, sender_domain, category, action
-            FROM {table_name}
-            WHERE message_id = ?
-            """,
-            (message_id,),
-        )
-        row = cursor.fetchone()
-        if row:
-            return table_name, row
-    return None, None
+    cursor.execute(
+        f"""
+        SELECT id, source, message_id, sender, sender_domain, category, action
+        FROM {EMAIL_TABLE}
+        WHERE message_id = ? OR provider_id = ?
+        """,
+        (message_id, message_id),
+    )
+    return cursor.fetchone()
 
 
 def _override_keys(sender: str | None, sender_domain: str | None) -> Iterable[str]:
@@ -37,11 +33,7 @@ def _maybe_create_overrides(
                 """
                 SELECT COUNT(*)
                 FROM corrections c
-                JOIN (
-                    SELECT message_id, sender_domain FROM fastmail
-                    UNION ALL
-                    SELECT message_id, sender_domain FROM google_emails
-                ) e ON e.message_id = c.message_id
+                JOIN emails e ON e.message_id = c.message_id
                 WHERE e.sender_domain = ?
                   AND c.corrected_category = ?
                   AND c.corrected_action = ?
@@ -53,11 +45,7 @@ def _maybe_create_overrides(
                 """
                 SELECT COUNT(*)
                 FROM corrections c
-                JOIN (
-                    SELECT message_id, sender FROM fastmail
-                    UNION ALL
-                    SELECT message_id, sender FROM google_emails
-                ) e ON e.message_id = c.message_id
+                JOIN emails e ON e.message_id = c.message_id
                 WHERE lower(e.sender) = ?
                   AND c.corrected_category = ?
                   AND c.corrected_action = ?
@@ -83,7 +71,7 @@ def create_correction(message_id: str, corrected_category: str, corrected_action
     conn = get_db()
     try:
         cursor = conn.cursor()
-        table_name, row = _find_email(cursor, message_id)
+        row = _find_email(cursor, message_id)
         if not row:
             raise ValueError(f"Email with message_id={message_id} not found")
 
@@ -108,8 +96,8 @@ def create_correction(message_id: str, corrected_category: str, corrected_action
             ),
         )
         cursor.execute(
-            f"UPDATE {table_name} SET category = ?, action = ? WHERE message_id = ?",
-            (corrected_category, corrected_action, message_id),
+            f"UPDATE {EMAIL_TABLE} SET category = ?, action = ? WHERE id = ?",
+            (corrected_category, corrected_action, row["id"]),
         )
         overrides = _maybe_create_overrides(
             cursor,
@@ -121,7 +109,7 @@ def create_correction(message_id: str, corrected_category: str, corrected_action
         conn.commit()
         return {
             "message_id": message_id,
-            "table": table_name,
+            "source": row["source"],
             "original_category": row["category"],
             "corrected_category": corrected_category,
             "original_action": row["action"],
@@ -160,27 +148,39 @@ def get_sender_override(sender: str | None, sender_domain: str | None = None) ->
         conn.close()
 
 
-def apply_sender_prefilters(table_name: str) -> int:
+def apply_sender_prefilters(source: str | None = None) -> int:
     conn = get_db()
     try:
         cursor = conn.cursor()
+        source_filter = "AND source = ?" if source else ""
+        params = (source,) if source else ()
+        cursor.execute("SELECT sender, override_category, override_action FROM sender_overrides")
+        overrides = {row["sender"]: row for row in cursor.fetchall()}
+        if not overrides:
+            return 0
         cursor.execute(
             f"""
             SELECT id, sender, sender_domain
-            FROM {table_name}
+            FROM {EMAIL_TABLE}
             WHERE category IS NULL OR category = ''
-            """
+            {source_filter}
+            """,
+            params,
         )
         updates = []
         for row in cursor.fetchall():
-            override = get_sender_override(row["sender"], row["sender_domain"])
+            override = None
+            for key in _override_keys(row["sender"], row["sender_domain"]):
+                if key in overrides:
+                    override = overrides[key]
+                    break
             if override:
                 updates.append(
                     (override["override_category"], override["override_action"], row["id"])
                 )
         if updates:
             cursor.executemany(
-                f"UPDATE {table_name} SET category = ?, action = ?, confidence = COALESCE(confidence, 1.0) WHERE id = ?",
+                f"UPDATE {EMAIL_TABLE} SET category = ?, action = ?, confidence = COALESCE(confidence, 1.0) WHERE id = ?",
                 updates,
             )
             conn.commit()

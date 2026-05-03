@@ -2,7 +2,7 @@ import os
 import logging
 import argparse
 import fasttext  # type: ignore
-from email_sort.db import get_db
+from email_sort.db import EMAIL_TABLE, get_db
 from email_sort.heuristics import download_model, MODEL_PATH
 from email_sort.config import get_config_dir
 from email_sort.progress import make_progress
@@ -19,29 +19,33 @@ logger = logging.getLogger(__name__)
 # Language detection logic
 
 
-def detect_languages(table_name="fastmail", batch_size=1000):
+def detect_languages(source=None, batch_size=1000):
     download_model()
     if not os.path.exists(MODEL_PATH):
         logger.error(f"Model not found and could not be downloaded to {MODEL_PATH}")
         return
 
     logger.info(f"Loading model from {MODEL_PATH}...")
-    model = fasttext.load_model(MODEL_PATH)
+    model = fasttext.load_model(str(MODEL_PATH))
     logger.info("Model loaded.")
 
     conn = get_db()
     cursor = conn.cursor()
 
     # Find emails without language
-    cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE language IS NULL")
+    source_filter = "AND source = ?" if source else ""
+    params = (source,) if source else ()
+    cursor.execute(
+        f"SELECT COUNT(*) FROM {EMAIL_TABLE} WHERE language IS NULL {source_filter}", params
+    )
     total = cursor.fetchone()[0]
 
     if total == 0:
-        logger.info(f"No emails to process in {table_name}.")
+        logger.info(f"No emails to process{f' for source={source}' if source else ''}.")
         conn.close()
         return
 
-    logger.info(f"Processing {total} emails in {table_name}...")
+    logger.info(f"Processing {total} emails{f' for source={source}' if source else ''}...")
 
     # We'll process in batches to avoid loading everything into memory
     # and to commit periodically
@@ -49,14 +53,18 @@ def detect_languages(table_name="fastmail", batch_size=1000):
     processed = 0
     progress = make_progress()
     with progress:
-        task = progress.add_task(f"Detecting {table_name}", total=total)
+        task = progress.add_task(f"Detecting {source or 'all sources'}", total=total)
         while True:
-            cursor.execute(f"""
+            cursor.execute(
+                f"""
                 SELECT id, subject, snippet 
-                FROM {table_name} 
+                FROM {EMAIL_TABLE} 
                 WHERE language IS NULL 
-                LIMIT {batch_size}
-            """)
+                {source_filter}
+                LIMIT ?
+            """,
+                (*params, batch_size),
+            )
             rows = cursor.fetchall()
             if not rows:
                 break
@@ -87,29 +95,25 @@ def detect_languages(table_name="fastmail", batch_size=1000):
                 updates.append((lang, email_id))
 
             # Batch update
-            cursor.executemany(f"UPDATE {table_name} SET language = ? WHERE id = ?", updates)
+            cursor.executemany(f"UPDATE {EMAIL_TABLE} SET language = ? WHERE id = ?", updates)
             conn.commit()
 
             processed += len(rows)
             progress.advance(task, len(rows))
 
     conn.close()
-    logger.info(f"Finished processing {processed} emails in {table_name}.")
+    logger.info(f"Finished processing {processed} emails.")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Detect language of emails using fastText")
     parser.add_argument(
-        "--table",
+        "--source",
         type=str,
-        default="all",
-        help="Table to process (fastmail, google_emails, or all)",
+        help="Only process one source",
     )
+    parser.add_argument("--table", dest="source", help=argparse.SUPPRESS)
     parser.add_argument("--batch", type=int, default=1000, help="Batch size for processing")
     args = parser.parse_args()
 
-    if args.table == "all":
-        detect_languages("fastmail", args.batch)
-        detect_languages("google_emails", args.batch)
-    else:
-        detect_languages(args.table, args.batch)
+    detect_languages(args.source, args.batch)

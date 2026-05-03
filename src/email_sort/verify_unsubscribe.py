@@ -1,42 +1,40 @@
 from datetime import datetime, timedelta
 
-from email_sort.db import EMAIL_TABLES, get_db
+from email_sort.db import EMAIL_TABLE, get_db
 
 
 def check_failed_unsubscribes() -> list[dict]:
     conn = get_db()
     try:
         cursor = conn.cursor()
-        cutoff = (datetime.now() - timedelta(days=14)).isoformat()
+        cutoff = (datetime.now() - timedelta(days=14)).strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute(
             """
-            SELECT sender, MIN(attempted_at) AS attempted_at
+            SELECT sender, MAX(attempted_at) AS attempted_at
             FROM unsubscribe_log
             WHERE status = 'success' AND attempted_at <= ?
             GROUP BY sender
             """,
             (cutoff,),
         )
+        successful_unsubscribes = cursor.fetchall()
         failed = []
         cursor.execute("DELETE FROM failed_unsubscribes")
-        for unsub in cursor.fetchall():
+        for unsub in successful_unsubscribes:
             count = 0
             last_received = None
-            for table_name in EMAIL_TABLES:
-                cursor.execute(
-                    f"""
-                    SELECT COUNT(*) AS count, MAX(date) AS last_received
-                    FROM {table_name}
-                    WHERE sender = ? AND date > ?
-                    """,
-                    (unsub["sender"], unsub["attempted_at"]),
-                )
-                row = cursor.fetchone()
-                count += row["count"] or 0
-                if row["last_received"] and (
-                    not last_received or row["last_received"] > last_received
-                ):
-                    last_received = row["last_received"]
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) AS count, MAX(date) AS last_received
+                FROM {EMAIL_TABLE}
+                WHERE sender = ? AND datetime(replace(substr(date, 1, 19), 'T', ' ')) > datetime(?)
+                """,
+                (unsub["sender"], unsub["attempted_at"]),
+            )
+            row = cursor.fetchone()
+            count += row["count"] or 0
+            if row["last_received"] and (not last_received or row["last_received"] > last_received):
+                last_received = row["last_received"]
             if count:
                 item = {
                     "sender": unsub["sender"],

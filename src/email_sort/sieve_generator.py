@@ -2,7 +2,7 @@ import difflib
 from pathlib import Path
 
 from email_sort.config import get_section_setting
-from email_sort.db import get_db
+from email_sort.db import EMAIL_TABLE, get_db
 
 
 def _escape(value: str) -> str:
@@ -83,10 +83,8 @@ def generate_sieve(output_path: str | None = None) -> str:
             )
 
         cursor.execute(
-            """
-            SELECT DISTINCT sender FROM fastmail WHERE dmarc_fail = 1 AND has_arc = 0
-            UNION
-            SELECT DISTINCT sender FROM google_emails WHERE dmarc_fail = 1 AND has_arc = 0
+            f"""
+            SELECT DISTINCT sender FROM {EMAIL_TABLE} WHERE dmarc_fail = 1 AND dmarc_arc_override = 0
             """
         )
         for row in cursor.fetchall():

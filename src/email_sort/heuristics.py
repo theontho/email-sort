@@ -1,13 +1,18 @@
-from email_sort.db import get_db
 import fasttext  # type: ignore
-import os
-import urllib.request
 import json
+import os
 import re
+import urllib.request
+import warnings
 from collections import defaultdict
+from datetime import timezone
+
 import email.utils
 from bs4 import BeautifulSoup
+from bs4 import XMLParsedAsHTMLWarning
+
 from email_sort.config import get_setting, get_config_dir
+from email_sort.db import EMAIL_TABLE, get_db
 
 MODEL_URL = "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin"
 # Path relative to centralized config directory
@@ -27,12 +32,15 @@ def _parse_date(value):
     try:
         from datetime import datetime
 
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except Exception:
         try:
-            return email.utils.parsedate_to_datetime(str(value))
+            parsed = email.utils.parsedate_to_datetime(str(value))
         except Exception:
             return None
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
 
 
 def _subject_key(subject):
@@ -52,8 +60,8 @@ def _looks_like_digest(subject):
     return any(re.search(pattern, subject, re.I) for pattern in patterns)
 
 
-def _update_duplicate_and_digest_flags(cursor, table_name):
-    cursor.execute(f"SELECT id, sender, subject, date FROM {table_name}")
+def _update_duplicate_and_digest_flags(cursor):
+    cursor.execute(f"SELECT id, sender, subject, date FROM {EMAIL_TABLE}")
     rows = [dict(row) for row in cursor.fetchall()]
     duplicate_ids: set[int] = set()
     by_sender_subject = defaultdict(list)
@@ -100,20 +108,21 @@ def _update_duplicate_and_digest_flags(cursor, table_name):
                     row["id"] for row in group if _looks_like_digest(row.get("subject"))
                 )
 
-    cursor.execute(f"UPDATE {table_name} SET is_duplicate = 0, is_digest = 0")
+    cursor.execute(f"UPDATE {EMAIL_TABLE} SET is_duplicate = 0, is_digest = 0")
     if duplicate_ids:
         cursor.executemany(
-            f"UPDATE {table_name} SET is_duplicate = 1 WHERE id = ?",
+            f"UPDATE {EMAIL_TABLE} SET is_duplicate = 1 WHERE id = ?",
             [(email_id,) for email_id in duplicate_ids],
         )
     if digest_ids:
         cursor.executemany(
-            f"UPDATE {table_name} SET is_digest = 1 WHERE id = ?",
+            f"UPDATE {EMAIL_TABLE} SET is_digest = 1 WHERE id = ?",
             [(email_id,) for email_id in digest_ids],
         )
 
 
 def run_heuristics():
+    warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
     download_model()
     # Suppress warning
     fasttext.FastText.eprint = lambda x: None
@@ -122,7 +131,7 @@ def run_heuristics():
     conn = get_db()
     c = conn.cursor()
 
-    for table_name in ["fastmail", "google_emails"]:
+    for table_name in [EMAIL_TABLE]:
         c.execute(
             f"SELECT id, subject, snippet, to_address, headers, body_html, dmarc_fail, has_arc, arc_auth_results FROM {table_name}"
         )
@@ -280,7 +289,7 @@ def run_heuristics():
 
             if len(updates) >= 1000:
                 c.executemany(
-                    f"UPDATE {table_name} SET language=?, is_not_for_me=?, category=COALESCE(category, ?), action=COALESCE(action, ?), confidence=COALESCE(confidence, ?), body_unsubscribe_links=?, heuristic_matches=?, dmarc_arc_override=? WHERE id=?",
+                    f"UPDATE {table_name} SET language=?, is_not_for_me=?, heuristic_category=COALESCE(heuristic_category, ?), heuristic_action=COALESCE(heuristic_action, ?), heuristic_confidence=COALESCE(heuristic_confidence, ?), body_unsubscribe_links=?, heuristic_matches=?, dmarc_arc_override=? WHERE id=?",
                     updates,
                 )
                 conn.commit()
@@ -288,32 +297,32 @@ def run_heuristics():
 
         if updates:
             c.executemany(
-                f"UPDATE {table_name} SET language=?, is_not_for_me=?, category=COALESCE(category, ?), action=COALESCE(action, ?), confidence=COALESCE(confidence, ?), body_unsubscribe_links=?, heuristic_matches=?, dmarc_arc_override=? WHERE id=?",
+                f"UPDATE {table_name} SET language=?, is_not_for_me=?, heuristic_category=COALESCE(heuristic_category, ?), heuristic_action=COALESCE(heuristic_action, ?), heuristic_confidence=COALESCE(heuristic_confidence, ?), body_unsubscribe_links=?, heuristic_matches=?, dmarc_arc_override=? WHERE id=?",
                 updates,
             )
             conn.commit()
 
         print(f"Detecting duplicates and digests in {table_name}...")
-        _update_duplicate_and_digest_flags(c, table_name)
+        _update_duplicate_and_digest_flags(c)
         conn.commit()
 
-        # Thread-aware classification propagation
-        print(f"Propagating thread classifications in {table_name}...")
+        # Thread-aware heuristic propagation
+        print(f"Propagating thread heuristic classifications in {table_name}...")
         c.execute(f"""
             UPDATE {table_name} 
-            SET category = (
-                SELECT category FROM {table_name} e2 
+            SET heuristic_category = (
+                SELECT heuristic_category FROM {table_name} e2 
                 WHERE e2.thread_id = {table_name}.thread_id 
-                AND e2.category IS NOT NULL 
+                AND e2.heuristic_category IS NOT NULL 
                 AND e2.thread_id != ''
                 LIMIT 1
             )
-            WHERE category IS NULL 
+            WHERE heuristic_category IS NULL 
             AND thread_id != ''
             AND EXISTS (
                 SELECT 1 FROM {table_name} e3 
                 WHERE e3.thread_id = {table_name}.thread_id 
-                AND e3.category IS NOT NULL
+                AND e3.heuristic_category IS NOT NULL
             )
         """)
         conn.commit()

@@ -2,7 +2,7 @@ import csv
 import json
 from pathlib import Path
 
-from email_sort.db import get_db
+from email_sort.db import EMAIL_TABLE, get_db
 
 
 OUT_DIR = Path("out")
@@ -14,15 +14,22 @@ def export_ban_list(path: str = "out/ban_list.csv") -> None:
     try:
         cursor = conn.cursor()
         cursor.execute(
-            """
-            SELECT sender_domain, language, is_not_for_me, category, dmarc_fail, dmarc_arc_override, COUNT(*) AS count
-            FROM (
-                SELECT sender_domain, language, is_not_for_me, category, dmarc_fail, dmarc_arc_override FROM fastmail
-                UNION ALL
-                SELECT sender_domain, language, is_not_for_me, category, dmarc_fail, dmarc_arc_override FROM google_emails
-            )
-            WHERE language != 'en' OR is_not_for_me = 1 OR category = 'Spam' OR (dmarc_fail = 1 AND dmarc_arc_override = 0)
-            GROUP BY sender_domain
+            f"""
+            SELECT sender_domain,
+                   CASE
+                       WHEN language != 'en' THEN 'Foreign Language (' || language || ')'
+                       WHEN is_not_for_me = 1 THEN 'Not for me'
+                       WHEN COALESCE(category, heuristic_category) = 'Spam' THEN 'Spam'
+                       WHEN dmarc_fail = 1 AND dmarc_arc_override = 0 THEN 'Authentication Failed'
+                       ELSE 'Unknown'
+                   END AS reason,
+                   COUNT(*) AS count
+            FROM {EMAIL_TABLE}
+            WHERE language != 'en'
+               OR is_not_for_me = 1
+               OR COALESCE(category, heuristic_category) = 'Spam'
+               OR (dmarc_fail = 1 AND dmarc_arc_override = 0)
+            GROUP BY sender_domain, reason
             ORDER BY count DESC
             """
         )
@@ -30,14 +37,7 @@ def export_ban_list(path: str = "out/ban_list.csv") -> None:
             writer = csv.writer(file)
             writer.writerow(["sender_domain", "reason", "count"])
             for row in cursor.fetchall():
-                reason = "Spam"
-                if row["language"] != "en":
-                    reason = f"Foreign Language ({row['language']})"
-                elif row["is_not_for_me"]:
-                    reason = "Not for me"
-                elif row["dmarc_fail"] and not row["dmarc_arc_override"]:
-                    reason = "Authentication Failed"
-                writer.writerow([row["sender_domain"], reason, row["count"]])
+                writer.writerow([row["sender_domain"], row["reason"], row["count"]])
     finally:
         conn.close()
     print(f"Wrote {path}")
@@ -49,16 +49,16 @@ def export_unsubscribe_list(path: str = "out/unsubscribe_list.csv") -> None:
     try:
         cursor = conn.cursor()
         cursor.execute(
-            """
-            SELECT sender, sender_domain, category, list_unsubscribe, body_unsubscribe_links, is_digest, COUNT(*) AS count
-            FROM (
-                SELECT sender, sender_domain, category, list_unsubscribe, body_unsubscribe_links, is_digest FROM fastmail
-                UNION ALL
-                SELECT sender, sender_domain, category, list_unsubscribe, body_unsubscribe_links, is_digest FROM google_emails
-            )
+            f"""
+            SELECT sender, sender_domain, COALESCE(category, heuristic_category) AS category,
+                   MIN(list_unsubscribe) AS list_unsubscribe,
+                   MIN(body_unsubscribe_links) AS body_unsubscribe_links,
+                   MAX(is_digest) AS is_digest,
+                   COUNT(*) AS count
+            FROM {EMAIL_TABLE}
             WHERE (list_unsubscribe IS NOT NULL OR body_unsubscribe_links IS NOT NULL)
-              AND (category IN ('Promotional','Newsletter','Spam','Social','Tech','Shopping','Health') OR is_digest = 1)
-            GROUP BY sender
+              AND (COALESCE(category, heuristic_category) IN ('Promotional','Newsletter','Spam','Social','Tech','Shopping','Health','Automated') OR is_digest = 1)
+            GROUP BY sender, sender_domain, COALESCE(category, heuristic_category)
             ORDER BY is_digest DESC, count DESC
             """
         )

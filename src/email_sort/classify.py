@@ -1,17 +1,19 @@
-import logging
-import time
-import threading
 import argparse
 import collections
+import logging
 import queue
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
-from openai import OpenAI
+
 from dotenv import load_dotenv
-from email_sort.db import get_db
+from openai import OpenAI
+
 from email_sort.config import get_setting, get_servers, get_config_dir
 from email_sort.corrections import apply_sender_prefilters
-from email_sort.sender_analysis import apply_has_user_reply_prefilter
+from email_sort.db import EMAIL_TABLE, get_db
 from email_sort.progress import make_progress
+from email_sort.sender_analysis import apply_has_user_reply_prefilter
 
 from rich.live import Live
 from rich.table import Table
@@ -77,7 +79,6 @@ def get_worker_pool():
     return worker_pool, total_workers
 
 
-lock = threading.Lock()
 stop_event = threading.Event()
 
 # Global state for display
@@ -128,7 +129,104 @@ class StatusDisplay:
         return create_display_table()
 
 
-def classify_single_email(worker_pool, row, pbar, pbar_task, table_name="fastmail"):
+VALID_CATEGORIES = {
+    "Finance",
+    "Health",
+    "Work",
+    "Newsletter",
+    "Promotional",
+    "Social",
+    "Home",
+    "Education",
+    "Tech",
+    "Shopping",
+    "Travel",
+    "Security",
+    "Shipping",
+    "Personal",
+    "Spam",
+    "Other",
+}
+
+VALID_ACTIONS = {
+    "Authentication",
+    "Mandatory",
+    "Informational",
+    "Newsletter",
+    "Promotional",
+    "Social",
+    "Personal",
+}
+NORMALIZED_CATEGORIES = {value.lower(): value for value in VALID_CATEGORIES}
+NORMALIZED_ACTIONS = {value.lower(): value for value in VALID_ACTIONS}
+
+
+def parse_classification(content: str) -> tuple[str, float, str, str]:
+    category, confidence, suggested_category, action = "Other", 0.0, "", ""
+    for line in reversed([line.strip() for line in content.splitlines() if line.strip()]):
+        clean_content = line.replace("`", "").replace("'", "").replace('"', "").strip()
+        parts = [p.strip() for p in clean_content.split(",")]
+        if len(parts) < 2:
+            continue
+        candidate_category = NORMALIZED_CATEGORIES.get(parts[0].lower(), parts[0])
+        try:
+            candidate_confidence = float(parts[1])
+        except ValueError, IndexError:
+            continue
+        candidate_action = parts[3] if len(parts) >= 4 else ""
+        if candidate_category not in VALID_CATEGORIES:
+            continue
+        if candidate_action:
+            candidate_action = NORMALIZED_ACTIONS.get(candidate_action.lower(), "")
+        return (
+            candidate_category,
+            candidate_confidence,
+            parts[2] if len(parts) >= 3 else "",
+            candidate_action,
+        )
+    return category, confidence, suggested_category, action
+
+
+def _write_batch(cursor, updates: list[tuple]) -> None:
+    cursor.executemany(
+        f"""
+        UPDATE {EMAIL_TABLE}
+        SET category = ?, confidence = ?, suggested_category = ?, action = ?,
+            classify_model = ?, classify_time = ?
+        WHERE id = ?
+        """,
+        updates,
+    )
+
+
+def classification_writer(
+    result_queue: queue.Queue, pbar, pbar_task, batch_size: int = 100
+) -> None:
+    conn = get_db()
+    pending: list[tuple] = []
+    try:
+        cursor = conn.cursor()
+        while True:
+            item = result_queue.get()
+            if item is None:
+                break
+            pending.append(item)
+            if len(pending) >= batch_size:
+                _write_batch(cursor, pending)
+                conn.commit()
+                if pbar and pbar_task is not None:
+                    pbar.update(pbar_task, advance=len(pending))
+                pending.clear()
+        if pending:
+            _write_batch(cursor, pending)
+            conn.commit()
+            if pbar and pbar_task is not None:
+                pbar.update(pbar_task, advance=len(pending))
+    finally:
+        conn.close()
+
+
+def classify_single_email(worker_pool, result_queue, row):
     if stop_event.is_set():
         return
 
@@ -167,6 +265,7 @@ def classify_single_email(worker_pool, row, pbar, pbar_task, table_name="fastmai
             temperature=0.1,
             timeout=120.0,
             max_tokens=512,
+            extra_body={"reasoning_effort": "none"},
         )
 
         if stop_event.is_set():
@@ -174,65 +273,14 @@ def classify_single_email(worker_pool, row, pbar, pbar_task, table_name="fastmai
 
         message = completion.choices[0].message
         content = (message.content or "").strip()
+        if not content:
+            content = (getattr(message, "reasoning_content", None) or "").strip()
 
-        category, confidence, suggested_category, action = "Other", 0.0, "", ""
-        if content:
-            clean_content = content.replace("`", "").replace("'", "").replace('"', "").strip()
-            parts = [p.strip() for p in clean_content.split(",")]
-
-            if len(parts) >= 1:
-                category = parts[0]
-            if len(parts) >= 2:
-                try:
-                    confidence = float(parts[1])
-                except ValueError, IndexError:
-                    confidence = 0.0
-            if len(parts) >= 3:
-                suggested_category = parts[2]
-            if len(parts) >= 4:
-                action = parts[3]
-
-        # Validate category
-        valid_categories = {
-            "Finance",
-            "Health",
-            "Work",
-            "Newsletter",
-            "Promotional",
-            "Social",
-            "Home",
-            "Education",
-            "Tech",
-            "Shopping",
-            "Travel",
-            "Security",
-            "Shipping",
-            "Personal",
-            "Spam",
-            "Other",
-        }
-        if category not in valid_categories:
-            category = "Other"
-
-        # Validate action
-        valid_actions = {
-            "Authentication",
-            "Mandatory",
-            "Informational",
-            "Newsletter",
-            "Promotional",
-            "Social",
-            "Personal",
-        }
-        if action not in valid_actions:
-            action = ""
+        category, confidence, suggested_category, action = parse_classification(content)
 
         duration = time.time() - start_time
 
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute(
-            f"UPDATE {table_name} SET category=?, confidence=?, suggested_category=?, action=?, classify_model=?, classify_time=? WHERE id=?",
+        result_queue.put(
             (
                 category,
                 confidence,
@@ -241,13 +289,8 @@ def classify_single_email(worker_pool, row, pbar, pbar_task, table_name="fastmai
                 f"{model_name}@{server_name}",
                 duration,
                 email_id,
-            ),
+            )
         )
-        conn.commit()
-        conn.close()
-
-        if pbar and pbar_task is not None:
-            pbar.update(pbar_task, advance=1)
 
         update_status(
             email_id,
@@ -259,74 +302,79 @@ def classify_single_email(worker_pool, row, pbar, pbar_task, table_name="fastmai
         if not stop_event.is_set():
             err_msg = f"[red]✗[/red] [dim]ID {email_id}:[/dim] {str(e)[:50]}"
             update_status(email_id, err_msg, is_finished=True)
-            logger.error(f"!!! Error classifying {email_id} in {table_name} on {server_url}: {e}")
+            logger.error(f"!!! Error classifying {email_id} on {server_url}: {e}")
     finally:
         # ALWAYS put the client info back in the pool
         worker_pool.put(client_info)
 
 
-def classify_emails(limit=None, table_name="fastmail", window=100, reclassify=None):
+def classify_emails(limit=None, source=None, window=100, reclassify=None):
+    from email_sort.db import init_db
+
+    init_db()
     global finished_tasks
     finished_tasks = collections.deque(maxlen=window)
 
     conn = get_db()
     c = conn.cursor()
 
-    tables = ["fastmail", "google_emails"] if table_name == "all" else [table_name]
+    source_filter = ""
+    params: list = []
+    if source:
+        source_filter = "AND source = ?"
+        params.append(source)
 
-    # Calculate per-table limit to ensure variety if a limit is provided
-    table_limit = None
-    if limit and len(tables) > 1:
-        table_limit = (limit // len(tables)) + 1
-    elif limit:
-        table_limit = limit
+    if reclassify == "all":
+        print("Clearing all LLM classification data for a fresh start...")
+        c.execute(
+            f"""
+            UPDATE {EMAIL_TABLE}
+            SET category = NULL, action = NULL, suggested_category = NULL,
+                confidence = NULL, classify_model = NULL, classify_time = NULL
+            WHERE (? IS NULL OR source = ?)
+            """,
+            (source, source),
+        )
+        conn.commit()
+    elif reclassify:
+        cats = [cat.strip() for cat in reclassify.split(",")]
+        print(f"Clearing categories {cats} for re-classification...")
+        placeholders = ",".join(["?"] * len(cats))
+        c.execute(
+            f"""
+            UPDATE {EMAIL_TABLE}
+            SET category = NULL, action = NULL, suggested_category = NULL,
+                confidence = NULL, classify_model = NULL, classify_time = NULL
+            WHERE category IN ({placeholders}) AND (? IS NULL OR source = ?)
+            """,
+            [*cats, source, source],
+        )
+        conn.commit()
 
-    all_rows = []
-    for t in tables:
-        if reclassify == "all":
-            print(f"Clearing all classification data in {t} for a fresh start...")
-            c.execute(
-                f"UPDATE {t} SET category = NULL, action = NULL, suggested_category = NULL, confidence = NULL, classify_model = NULL, classify_time = NULL"
-            )
-            conn.commit()
-        elif reclassify:
-            cats = [cat.strip() for cat in reclassify.split(",")]
-            print(f"Clearing categories {cats} in {t} for re-classification...")
-            placeholders = ",".join(["?"] * len(cats))
-            c.execute(
-                f"UPDATE {t} SET category = NULL, action = NULL, suggested_category = NULL, confidence = NULL, classify_model = NULL, classify_time = NULL WHERE category IN ({placeholders})",
-                cats,
-            )
-            conn.commit()
+    override_count = apply_sender_prefilters(source)
+    reply_count = apply_has_user_reply_prefilter(source)
+    if override_count or reply_count:
+        print(
+            f"Applied prefilters: {override_count} sender overrides, {reply_count} user-reply senders"
+        )
 
-        override_count = apply_sender_prefilters(t)
-        reply_count = apply_has_user_reply_prefilter(t)
-        if override_count or reply_count:
-            print(
-                f"Applied prefilters in {t}: {override_count} sender overrides, {reply_count} user-reply senders"
-            )
+    query = f"""
+        SELECT id, sender, subject, snippet
+        FROM {EMAIL_TABLE}
+        WHERE (category IS NULL OR category = '')
+        AND (heuristic_category IS NULL OR heuristic_category = '')
+        AND language = 'en'
+        AND is_not_for_me = 0
+        AND (dmarc_fail = 0 OR dmarc_arc_override = 1)
+        {source_filter}
+        ORDER BY id
+    """
+    if limit:
+        query += " LIMIT ?"
+        params.append(limit)
 
-        query = f"""
-            SELECT id, sender, subject, snippet 
-            FROM {t} 
-            WHERE (category IS NULL OR category = '') 
-            AND language = 'en' 
-            AND is_not_for_me = 0
-            AND (dmarc_fail = 0 OR dmarc_arc_override = 1)
-        """
-        if table_limit:
-            query += f" LIMIT {table_limit}"
-
-        try:
-            c.execute(query)
-            rows = c.fetchall()
-            # Attach table name to each row
-            for row in rows:
-                r_dict = dict(row)
-                r_dict["_table"] = t
-                all_rows.append(r_dict)
-        except Exception as e:
-            print(f"Error accessing table {t}: {e}")
+    c.execute(query, params)
+    all_rows = [dict(row) for row in c.fetchall()]
 
     conn.close()
 
@@ -334,14 +382,10 @@ def classify_emails(limit=None, table_name="fastmail", window=100, reclassify=No
         print("No emails to classify.")
         return
 
-    # If we have a limit and multiple tables, we might have exceeded it.
-    if limit and len(all_rows) > limit:
-        all_rows = all_rows[:limit]
-
     worker_pool, total_workers = get_worker_pool()
-    logger.info(
-        f"Starting classification with {total_workers} workers across multiple servers on {len(tables)} table(s)"
-    )
+    if total_workers <= 0:
+        raise RuntimeError("No classification workers configured")
+    logger.info(f"Starting classification with {total_workers} workers across multiple servers")
 
     # Progress tracking
     layout = Layout()
@@ -354,6 +398,13 @@ def classify_emails(limit=None, table_name="fastmail", window=100, reclassify=No
 
     try:
         with Live(layout, refresh_per_second=4, console=console, screen=True):
+            result_queue: queue.Queue = queue.Queue()
+            writer = threading.Thread(
+                target=classification_writer,
+                args=(result_queue, progress, pbar_task),
+                daemon=True,
+            )
+            writer.start()
             with ThreadPoolExecutor(max_workers=total_workers) as executor:
                 for row in all_rows:
                     if stop_event.is_set():
@@ -361,13 +412,13 @@ def classify_emails(limit=None, table_name="fastmail", window=100, reclassify=No
                     executor.submit(
                         classify_single_email,
                         worker_pool,
+                        result_queue,
                         row,
-                        progress,
-                        pbar_task,
-                        row["_table"],
                     )
 
                 executor.shutdown(wait=True)
+            result_queue.put(None)
+            writer.join()
     except KeyboardInterrupt:
         stop_event.set()
         print("\nStopping classification...")
@@ -378,7 +429,8 @@ def classify_emails(limit=None, table_name="fastmail", window=100, reclassify=No
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Classify emails using LLM")
     parser.add_argument("--limit", type=int, help="Maximum number of emails to classify")
-    parser.add_argument("--table", type=str, default="all", help="Table name to classify")
+    parser.add_argument("--source", type=str, help="Only classify one source")
+    parser.add_argument("--table", dest="source", help=argparse.SUPPRESS)
     parser.add_argument("--window", type=int, default=100, help="Number of status lines to buffer")
     parser.add_argument(
         "--reclassify",
@@ -389,7 +441,7 @@ if __name__ == "__main__":
 
     classify_emails(
         limit=args.limit,
-        table_name=args.table,
+        source=args.source,
         window=args.window,
         reclassify=args.reclassify,
     )

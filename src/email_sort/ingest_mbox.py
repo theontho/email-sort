@@ -7,7 +7,7 @@ from email_sort.email_parse import message_record, upsert_email
 from email_sort.progress import make_progress
 
 
-def parse_mbox(mbox_path, table_name="google_emails"):
+def parse_mbox(mbox_path, source="gmail"):
     init_db()
     print(f"Opening {mbox_path}...")
     print("Indexing mbox with Python mailbox module. This can take a while for 10GB+ files.")
@@ -35,8 +35,8 @@ def parse_mbox(mbox_path, table_name="google_emails"):
                 task = progress.add_task("Ingesting mbox", total=total_messages)
                 for message in mbox:
                     try:
-                        record = message_record(message, "gmail")
-                        upsert_email(cursor, table_name, record)
+                        record = message_record(message, source)
+                        upsert_email(cursor, record)
                     except Exception as exc:
                         skipped += 1
                         progress.console.print(
@@ -49,8 +49,8 @@ def parse_mbox(mbox_path, table_name="google_emails"):
         else:
             for message in mbox:
                 try:
-                    record = message_record(message, "gmail")
-                    upsert_email(cursor, table_name, record)
+                    record = message_record(message, source)
+                    upsert_email(cursor, record)
                 except Exception as exc:
                     skipped += 1
                     print(f"Skipping malformed message: {exc}")
@@ -72,13 +72,13 @@ def parse_mbox(mbox_path, table_name="google_emails"):
         conn.close()
 
     print(
-        f"Finished parsing {processed} messages from mbox into {table_name}. "
+        f"Finished parsing {processed} messages from mbox with source={source}. "
         f"Skipped {skipped} malformed messages."
     )
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python -m email_sort.ingest_mbox path/to/takeout.mbox [table_name]")
+        print("Usage: python -m email_sort.ingest_mbox path/to/takeout.mbox [source]")
         sys.exit(1)
-    parse_mbox(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "google_emails")
+    parse_mbox(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "gmail")

@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.table import Table
 
 from email_sort.config import get_config_dir, get_config_path
-from email_sort.db import DB_PATH, EMAIL_TABLES, get_db
+from email_sort.db import DB_PATH, EMAIL_TABLE, get_db
 
 
 console = Console()
@@ -19,29 +19,27 @@ def command_ingest(args):
     if args.source == "fastmail":
         from email_sort.ingest_fastmail import ingest_fastmail
 
-        ingest_fastmail()
+        ingest_fastmail(args.name)
     elif args.source == "mbox":
         from email_sort.ingest_mbox import parse_mbox
 
-        parse_mbox(args.mbox_path, args.table)
+        parse_mbox(args.mbox_path, args.source_name)
     elif args.source == "imap":
         from email_sort.ingest_imap import ingest_imap
 
-        ingest_imap(watch=args.watch, table_name=args.table)
+        ingest_imap(watch=args.watch, source=args.name)
 
 
 def command_classify(args):
     from email_sort.classify import classify_emails
 
-    classify_emails(args.limit, args.table, args.window, args.reclassify)
+    classify_emails(args.limit, args.source, args.window, args.reclassify)
 
 
 def command_detect_language(args):
     from email_sort.detect_language import detect_languages
 
-    tables = EMAIL_TABLES if args.table == "all" else (args.table,)
-    for table_name in tables:
-        detect_languages(table_name, args.batch)
+    detect_languages(args.source, args.batch)
 
 
 def command_init_db(args):
@@ -189,7 +187,9 @@ def command_sieve(args):
 def command_export(args):
     from email_sort.export import export_ban_list, export_results, export_unsubscribe_list
 
-    if args.export_type == "ban-list":
+    if args.export_type in {None, "all"}:
+        export_results()
+    elif args.export_type == "ban-list":
         export_ban_list()
     elif args.export_type == "unsubscribe-list":
         export_unsubscribe_list()
@@ -203,25 +203,36 @@ def command_stats(args):
     conn = get_db()
     try:
         cursor = conn.cursor()
-        for table_name in EMAIL_TABLES:
-            table = Table(title=f"{table_name} Stats")
-            table.add_column("Metric")
-            table.add_column("Value", justify="right")
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
-            total = cursor.fetchone()[0]
-            cursor.execute(
-                f"SELECT COUNT(*) FROM {table_name} WHERE category IS NOT NULL AND category != ''"
+        table = Table(title="Email Stats by Source")
+        table.add_column("Source")
+        table.add_column("Total", justify="right")
+        table.add_column("LLM Classified", justify="right")
+        table.add_column("Heuristic", justify="right")
+        table.add_column("Duplicates", justify="right")
+        table.add_column("Digests", justify="right")
+        cursor.execute(
+            f"""
+            SELECT source,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN category IS NOT NULL AND category != '' THEN 1 ELSE 0 END) AS classified,
+                   SUM(CASE WHEN heuristic_category IS NOT NULL AND heuristic_category != '' THEN 1 ELSE 0 END) AS heuristic,
+                   SUM(CASE WHEN is_duplicate = 1 THEN 1 ELSE 0 END) AS duplicates,
+                   SUM(CASE WHEN is_digest = 1 THEN 1 ELSE 0 END) AS digests
+            FROM {EMAIL_TABLE}
+            GROUP BY source
+            ORDER BY total DESC
+            """
+        )
+        for row in cursor.fetchall():
+            table.add_row(
+                row["source"],
+                str(row["total"]),
+                str(row["classified"] or 0),
+                str(row["heuristic"] or 0),
+                str(row["duplicates"] or 0),
+                str(row["digests"] or 0),
             )
-            classified = cursor.fetchone()[0]
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE is_duplicate = 1")
-            duplicates = cursor.fetchone()[0]
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE is_digest = 1")
-            digests = cursor.fetchone()[0]
-            table.add_row("Total Emails", str(total))
-            table.add_row("Classified", str(classified))
-            table.add_row("Duplicates", str(duplicates))
-            table.add_row("Digests", str(digests))
-            console.print(table)
+        console.print(table)
 
         category_table = Table(title="Category Distribution")
         category_table.add_column("Category")
@@ -229,9 +240,7 @@ def command_stats(args):
         cursor.execute(
             """
             SELECT category, COUNT(*) AS count FROM (
-                SELECT category FROM fastmail
-                UNION ALL
-                SELECT category FROM google_emails
+                SELECT category FROM emails
             ) WHERE category IS NOT NULL AND category != ''
             GROUP BY category ORDER BY count DESC
             """
@@ -269,27 +278,31 @@ def build_parser():
 
     ingest = subparsers.add_parser("ingest", help="Ingest emails")
     ingest_sub = ingest.add_subparsers(dest="source", required=True)
-    ingest_sub.add_parser("fastmail", help="Ingest from Fastmail JMAP").set_defaults(
-        func=command_ingest
-    )
+    fastmail = ingest_sub.add_parser("fastmail", help="Ingest from Fastmail JMAP")
+    fastmail.add_argument("--name", "--source", default="fastmail")
+    fastmail.set_defaults(func=command_ingest)
     mbox = ingest_sub.add_parser("mbox", help="Ingest from mbox")
     mbox.add_argument("mbox_path")
-    mbox.add_argument("--table", default="google_emails")
+    mbox.add_argument("--source", dest="source_name", default="gmail")
+    mbox.add_argument("--table", dest="source_name", help=argparse.SUPPRESS)
     mbox.set_defaults(func=command_ingest)
     imap = ingest_sub.add_parser("imap", help="Ingest from IMAP")
     imap.add_argument("--watch", action="store_true")
-    imap.add_argument("--table", default="fastmail")
+    imap.add_argument("--name", "--source", default="imap")
+    imap.add_argument("--table", dest="name", help=argparse.SUPPRESS)
     imap.set_defaults(func=command_ingest)
 
     classify = subparsers.add_parser("classify", help="Classify emails")
     classify.add_argument("--limit", type=int)
-    classify.add_argument("--table", default="all")
+    classify.add_argument("--source")
+    classify.add_argument("--table", dest="source", help=argparse.SUPPRESS)
     classify.add_argument("--window", type=int, default=100)
     classify.add_argument("--reclassify")
     classify.set_defaults(func=command_classify)
 
     lang = subparsers.add_parser("detect-language")
-    lang.add_argument("--table", default="all")
+    lang.add_argument("--source")
+    lang.add_argument("--table", dest="source", help=argparse.SUPPRESS)
     lang.add_argument("--batch", type=int, default=1000)
     lang.set_defaults(func=command_detect_language)
 
@@ -328,7 +341,9 @@ def build_parser():
         child.set_defaults(func=command_sieve)
 
     export = subparsers.add_parser("export")
-    export_sub = export.add_subparsers(dest="export_type", required=True)
+    export.set_defaults(func=command_export, export_type=None)
+    export_sub = export.add_subparsers(dest="export_type")
+    export_sub.add_parser("all").set_defaults(func=command_export)
     export_sub.add_parser("ban-list").set_defaults(func=command_export)
     export_sub.add_parser("unsubscribe-list").set_defaults(func=command_export)
     export_corr = export_sub.add_parser("corrections")
@@ -340,15 +355,17 @@ def build_parser():
     subparsers.add_parser("watch").set_defaults(func=command_watch)
 
     legacy_fastmail = subparsers.add_parser("ingest-fastmail")
+    legacy_fastmail.add_argument("--source", default="fastmail")
     legacy_fastmail.set_defaults(
-        func=lambda args: command_ingest(argparse.Namespace(source="fastmail"))
+        func=lambda args: command_ingest(argparse.Namespace(source="fastmail", name=args.source))
     )
     legacy_mbox = subparsers.add_parser("ingest-mbox")
     legacy_mbox.add_argument("mbox_path")
-    legacy_mbox.add_argument("--table", default="google_emails")
+    legacy_mbox.add_argument("--source", default="gmail")
+    legacy_mbox.add_argument("--table", dest="source", help=argparse.SUPPRESS)
     legacy_mbox.set_defaults(
         func=lambda args: command_ingest(
-            argparse.Namespace(source="mbox", mbox_path=args.mbox_path, table=args.table)
+            argparse.Namespace(source="mbox", mbox_path=args.mbox_path, source_name=args.source)
         )
     )
 
@@ -360,6 +377,7 @@ def main():
     args = parser.parse_args()
     if args.quiet:
         sys.stdout = open(os.devnull, "w")
+        console.file = sys.stdout
     if not hasattr(args, "func"):
         parser.print_help()
         return

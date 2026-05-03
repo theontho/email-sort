@@ -1,22 +1,25 @@
 import asyncio
+import ipaddress
 import json
 import random
 import re
+import socket
 import smtplib
 import time
 from datetime import datetime, timedelta
 from email.message import EmailMessage
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
 from email_sort.config import get_config_dir, get_section_setting
-from email_sort.db import EMAIL_TABLES, get_db
+from email_sort.db import EMAIL_TABLE, get_db
 
 
 PROOF_DIR = get_config_dir() / "unsubscribe_proofs"
 CLICK_TEXT = ("unsubscribe", "confirm", "opt out", "remove")
+ALLOWED_SCHEMES = {"https"}
 
 
 def _extract_urls(list_unsubscribe: str | None) -> tuple[list[str], list[str]]:
@@ -49,10 +52,30 @@ def extract_unsubscribe_urls_from_html(html: str | None) -> list[str]:
 
 def _safe_sender(sender: str) -> bool:
     sender_lower = (sender or "").lower()
-    patterns = [
-        str(item).lower() for item in get_section_setting("unsubscribe", "safe_senders", [])
-    ]
+    configured = get_section_setting("unsubscribe", "safe_senders", [])
+    if isinstance(configured, str):
+        configured = [item.strip() for item in configured.split(",") if item.strip()]
+    patterns = [str(item).lower() for item in configured]
     return any(re.search(pattern, sender_lower) for pattern in patterns)
+
+
+def _is_safe_url(url: str) -> tuple[bool, str | None]:
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in ALLOWED_SCHEMES:
+        return False, "only https URLs are allowed"
+    if not parsed.hostname:
+        return False, "missing hostname"
+    try:
+        addresses = socket.getaddrinfo(parsed.hostname, None)
+    except socket.gaierror as exc:
+        return False, f"DNS lookup failed: {exc}"
+    for family, _, _, _, sockaddr in addresses:
+        if family not in {socket.AF_INET, socket.AF_INET6}:
+            continue
+        ip = ipaddress.ip_address(sockaddr[0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            return False, f"blocked private or reserved address {ip}"
+    return True, None
 
 
 def _rate_limits() -> tuple[int, int]:
@@ -64,8 +87,8 @@ def _rate_limits() -> tuple[int, int]:
 
 def _check_rate_limit(cursor) -> tuple[bool, str | None]:
     max_hour, max_day = _rate_limits()
-    hour_ago = (datetime.now() - timedelta(hours=1)).isoformat()
-    day_ago = (datetime.now() - timedelta(days=1)).isoformat()
+    hour_ago = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    day_ago = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute("SELECT COUNT(*) FROM unsubscribe_log WHERE attempted_at >= ?", (hour_ago,))
     hour_count = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM unsubscribe_log WHERE attempted_at >= ?", (day_ago,))
@@ -98,6 +121,9 @@ def _request_with_backoff(method: str, url: str, **kwargs) -> requests.Response:
     for attempt in range(4):
         try:
             response = requests.request(method, url, timeout=20, **kwargs)
+            safe, reason = _is_safe_url(response.url)
+            if not safe:
+                raise RuntimeError(f"unsafe redirect target: {reason}")
             if response.status_code not in {429, 500, 502, 503, 504}:
                 return response
             last_error = RuntimeError(f"HTTP {response.status_code}")
@@ -108,6 +134,9 @@ def _request_with_backoff(method: str, url: str, **kwargs) -> requests.Response:
 
 
 def _rfc8058_post(url: str) -> tuple[bool, str | None]:
+    safe, reason = _is_safe_url(url)
+    if not safe:
+        return False, reason
     try:
         response = _request_with_backoff(
             "POST",
@@ -121,6 +150,9 @@ def _rfc8058_post(url: str) -> tuple[bool, str | None]:
 
 
 def _http_get(url: str) -> tuple[bool, str | None]:
+    safe, reason = _is_safe_url(url)
+    if not safe:
+        return False, reason
     try:
         response = _request_with_backoff("GET", url, allow_redirects=True)
         return response.status_code < 400, f"HTTP {response.status_code}"
@@ -136,11 +168,14 @@ def _mailto(mailto: str) -> tuple[bool, str | None]:
         return False, "mailto fallback requires [smtp] host, username, password"
     parsed = urlparse(mailto)
     recipient = unquote(parsed.path)
+    query = parse_qs(parsed.query)
     message = EmailMessage()
     message["From"] = smtp_username
     message["To"] = recipient
-    message["Subject"] = "Unsubscribe"
-    message.set_content("Please unsubscribe this address from future mailings.")
+    message["Subject"] = query.get("subject", ["Unsubscribe"])[0]
+    message.set_content(
+        query.get("body", ["Please unsubscribe this address from future mailings."])[0]
+    )
     try:
         with smtplib.SMTP_SSL(smtp_host, int(get_section_setting("smtp", "port", 465))) as smtp:
             smtp.login(smtp_username, smtp_password)
@@ -151,6 +186,9 @@ def _mailto(mailto: str) -> tuple[bool, str | None]:
 
 
 async def browser_unsubscribe(url: str, sender_domain: str) -> tuple[bool, str | None, str | None]:
+    safe, reason = _is_safe_url(url)
+    if not safe:
+        return False, reason, None
     try:
         from playwright.async_api import async_playwright
     except Exception as exc:
@@ -159,6 +197,7 @@ async def browser_unsubscribe(url: str, sender_domain: str) -> tuple[bool, str |
     PROOF_DIR.mkdir(parents=True, exist_ok=True)
     safe_domain = re.sub(r"[^A-Za-z0-9_.-]", "_", sender_domain or "unknown")
     screenshot_path = PROOF_DIR / f"{safe_domain}_{int(time.time())}.png"
+    browser = None
     try:
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=True)
@@ -192,10 +231,15 @@ async def browser_unsubscribe(url: str, sender_domain: str) -> tuple[bool, str |
                 except Exception:
                     pass
             await page.screenshot(path=str(screenshot_path), full_page=True)
-            await browser.close()
         return clicked, None if clicked else "no confirmation element found", str(screenshot_path)
     except Exception as exc:
         return False, str(exc), None
+    finally:
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:
+                pass
 
 
 def unsubscribe_candidates(limit: int | None = None) -> list[dict]:
@@ -203,23 +247,28 @@ def unsubscribe_candidates(limit: int | None = None) -> list[dict]:
     try:
         cursor = conn.cursor()
         candidates: dict[str, dict] = {}
-        for table_name in EMAIL_TABLES:
-            query = f"""
-                SELECT sender, sender_domain, list_unsubscribe, list_unsubscribe_post,
-                       body_unsubscribe_links, body_html, category, is_digest
-                FROM {table_name}
-                WHERE sender IS NOT NULL AND sender != ''
-                  AND (list_unsubscribe IS NOT NULL OR body_unsubscribe_links IS NOT NULL OR body_html IS NOT NULL)
-                  AND (category IN ('Promotional','Newsletter','Spam','Social','Shopping','Tech','Health') OR is_digest = 1)
-                ORDER BY is_digest DESC, date DESC
-            """
-            if limit:
-                query += f" LIMIT {int(limit)}"
+        query = f"""
+            SELECT sender, sender_domain, list_unsubscribe, list_unsubscribe_post,
+                   body_unsubscribe_links, category, heuristic_category, is_digest
+            FROM {EMAIL_TABLE}
+            WHERE sender IS NOT NULL AND sender != ''
+              AND (list_unsubscribe IS NOT NULL OR body_unsubscribe_links IS NOT NULL)
+              AND (
+                  category IN ('Promotional','Newsletter','Spam','Social','Shopping','Tech','Health')
+                  OR heuristic_category IN ('Promotional','Newsletter','Spam','Social','Shopping','Tech','Health','Automated')
+                  OR is_digest = 1
+              )
+            ORDER BY is_digest DESC, date DESC
+        """
+        if limit:
+            query += " LIMIT ?"
+            cursor.execute(query, (int(limit),))
+        else:
             cursor.execute(query)
-            for row in cursor.fetchall():
-                sender = row["sender"]
-                if sender not in candidates and not _safe_sender(sender):
-                    candidates[sender] = dict(row)
+        for row in cursor.fetchall():
+            sender = row["sender"]
+            if sender not in candidates and not _safe_sender(sender):
+                candidates[sender] = dict(row)
         return list(candidates.values())
     finally:
         conn.close()
@@ -234,7 +283,6 @@ async def process_candidate(candidate: dict) -> dict:
             body_urls = json.loads(candidate["body_unsubscribe_links"])
         except Exception:
             body_urls = []
-    body_urls.extend(extract_unsubscribe_urls_from_html(candidate.get("body_html")))
     attempts: list[tuple[str, str]] = []
     if "List-Unsubscribe=One-Click" in (candidate.get("list_unsubscribe_post") or ""):
         attempts.extend(("rfc8058_post", url) for url in http_urls)

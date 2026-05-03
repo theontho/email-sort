@@ -1,10 +1,13 @@
-import sqlite3
 import os
+import sqlite3
 from pathlib import Path
+
 from email_sort.config import get_config_dir, get_setting
 
 
-EMAIL_TABLES = ("fastmail", "google_emails")
+EMAIL_TABLE = "emails"
+EMAIL_TABLES = (EMAIL_TABLE,)
+LEGACY_EMAIL_TABLES = ("fastmail", "google_emails")
 
 
 def _get_db_path() -> Path:
@@ -17,7 +20,7 @@ def _get_db_path() -> Path:
     """
     env_path = os.environ.get("EMAIL_SORT_DB")
     if env_path:
-        return Path(env_path)
+        return Path(env_path).expanduser()
 
     data_dir = get_setting("data_dir")
     if data_dir:
@@ -30,10 +33,14 @@ DB_PATH = _get_db_path()
 
 
 def get_db():
-    db_dir = DB_PATH.parent
+    db_path = _get_db_path()
+    db_dir = db_path.parent
     if not db_dir.exists():
         db_dir.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH), timeout=30)
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -57,12 +64,13 @@ def add_column_if_missing(
         c.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
 
 
-def create_email_table(c, table_name):
+def create_email_table(c, table_name: str = EMAIL_TABLE):
     c.execute(f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source TEXT,
-            message_id TEXT UNIQUE,
+            source TEXT NOT NULL DEFAULT '',
+            provider_id TEXT NOT NULL,
+            message_id TEXT,
             sender TEXT,
             sender_domain TEXT,
             to_address TEXT,
@@ -84,14 +92,26 @@ def create_email_table(c, table_name):
             heuristic_matches TEXT,
             dmarc_fail BOOLEAN DEFAULT 0,
             spf_fail BOOLEAN DEFAULT 0,
+            arc_auth_results TEXT,
+            has_arc BOOLEAN DEFAULT 0,
+            dkim_pass BOOLEAN DEFAULT 0,
+            dmarc_arc_override BOOLEAN DEFAULT 0,
             language TEXT,
             is_not_for_me BOOLEAN DEFAULT 0,
+            is_duplicate BOOLEAN DEFAULT 0,
+            is_digest BOOLEAN DEFAULT 0,
+            heuristic_category TEXT,
+            heuristic_action TEXT,
+            heuristic_confidence REAL,
             category TEXT,
             confidence REAL,
             suggested_category TEXT,
             classify_model TEXT,
             classify_time REAL,
-            action TEXT
+            action TEXT,
+            thread_id TEXT,
+            delivered_to TEXT,
+            UNIQUE(source, provider_id)
         )
     """)
     # Add columns if they don't exist (for existing databases)
@@ -108,18 +128,34 @@ def create_email_table(c, table_name):
         ("list_unsubscribe_post", "TEXT"),
         ("body_unsubscribe_links", "TEXT"),
         ("heuristic_matches", "TEXT"),
+        ("provider_id", "TEXT NOT NULL DEFAULT ''"),
         ("thread_id", "TEXT"),
         ("delivered_to", "TEXT"),
+        ("arc_auth_results", "TEXT"),
+        ("has_arc", "BOOLEAN DEFAULT 0"),
+        ("dkim_pass", "BOOLEAN DEFAULT 0"),
+        ("dmarc_arc_override", "BOOLEAN DEFAULT 0"),
+        ("is_duplicate", "BOOLEAN DEFAULT 0"),
+        ("is_digest", "BOOLEAN DEFAULT 0"),
+        ("heuristic_category", "TEXT"),
+        ("heuristic_action", "TEXT"),
+        ("heuristic_confidence", "REAL"),
     ]
     for col_name, col_type in columns:
         add_column_if_missing(c, table_name, col_name, col_type)
+    c.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_source ON {table_name}(source)")
+    c.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_sender ON {table_name}(sender)")
+    c.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{table_name}_sender_domain ON {table_name}(sender_domain)"
+    )
+    c.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_message_id ON {table_name}(message_id)")
+    c.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_category ON {table_name}(category)")
 
 
 def init_db():
     conn = get_db()
     c = conn.cursor()
-    for table_name in EMAIL_TABLES:
-        create_email_table(c, table_name)
+    create_email_table(c, EMAIL_TABLE)
     conn.commit()
     conn.close()
     from email_sort.migrate import migrate
