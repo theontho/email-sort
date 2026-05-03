@@ -7,7 +7,8 @@ from email_sort.db import EMAIL_TABLE, get_db
 def _find_email(cursor, message_id: str):
     cursor.execute(
         f"""
-        SELECT id, source, message_id, sender, sender_domain, category, action
+        SELECT id, source, message_id, sender, sender_domain, category, action,
+               rule_category, rule_action, heuristic_category, heuristic_action
         FROM {EMAIL_TABLE}
         WHERE message_id = ? OR provider_id = ?
         """,
@@ -89,14 +90,21 @@ def create_correction(message_id: str, corrected_category: str, corrected_action
             """,
             (
                 message_id,
-                row["category"],
+                row["category"] or row["rule_category"] or row["heuristic_category"],
                 corrected_category,
-                row["action"],
+                row["action"] or row["rule_action"] or row["heuristic_action"],
                 corrected_action,
             ),
         )
         cursor.execute(
-            f"UPDATE {EMAIL_TABLE} SET category = ?, action = ? WHERE id = ?",
+            f"""
+            UPDATE {EMAIL_TABLE}
+            SET rule_category = ?,
+                rule_action = ?,
+                rule_confidence = 1.0,
+                rule_source = 'manual-correction'
+            WHERE id = ?
+            """,
             (corrected_category, corrected_action, row["id"]),
         )
         overrides = _maybe_create_overrides(
@@ -110,9 +118,9 @@ def create_correction(message_id: str, corrected_category: str, corrected_action
         return {
             "message_id": message_id,
             "source": row["source"],
-            "original_category": row["category"],
+            "original_category": row["category"] or row["rule_category"] or row["heuristic_category"],
             "corrected_category": corrected_category,
-            "original_action": row["action"],
+            "original_action": row["action"] or row["rule_action"] or row["heuristic_action"],
             "corrected_action": corrected_action,
             "overrides": overrides,
         }
@@ -162,7 +170,7 @@ def apply_sender_prefilters(source: str | None = None) -> int:
             f"""
             SELECT id, sender, sender_domain
             FROM {EMAIL_TABLE}
-            WHERE category IS NULL OR category = ''
+            WHERE (rule_category IS NULL OR rule_category = '')
             {source_filter}
             """,
             params,
@@ -180,7 +188,7 @@ def apply_sender_prefilters(source: str | None = None) -> int:
                 )
         if updates:
             cursor.executemany(
-                f"UPDATE {EMAIL_TABLE} SET category = ?, action = ?, confidence = COALESCE(confidence, 1.0) WHERE id = ?",
+                f"UPDATE {EMAIL_TABLE} SET rule_category = ?, rule_action = ?, rule_confidence = 1.0, rule_source = 'sender-override' WHERE id = ?",
                 updates,
             )
             conn.commit()
