@@ -23,7 +23,11 @@ def _extract_urls(list_unsubscribe: str | None) -> tuple[list[str], list[str]]:
     if not list_unsubscribe:
         return [], []
     values = re.findall(r"<([^>]+)>", list_unsubscribe) or re.split(r"\s*,\s*", list_unsubscribe)
-    http_urls = [value.strip() for value in values if value.strip().lower().startswith(("http://", "https://"))]
+    http_urls = [
+        value.strip()
+        for value in values
+        if value.strip().lower().startswith(("http://", "https://"))
+    ]
     mailtos = [value.strip() for value in values if value.strip().lower().startswith("mailto:")]
     return http_urls, mailtos
 
@@ -36,14 +40,18 @@ def extract_unsubscribe_urls_from_html(html: str | None) -> list[str]:
     for anchor in soup.find_all("a", href=True):
         text = anchor.get_text(" ").lower()
         href = str(anchor["href"])
-        if href.startswith("http") and ("unsubscribe" in href.lower() or "unsubscribe" in text or "opt out" in text):
+        if href.startswith("http") and (
+            "unsubscribe" in href.lower() or "unsubscribe" in text or "opt out" in text
+        ):
             urls.append(href)
     return urls[:5]
 
 
 def _safe_sender(sender: str) -> bool:
     sender_lower = (sender or "").lower()
-    patterns = [str(item).lower() for item in get_section_setting("unsubscribe", "safe_senders", [])]
+    patterns = [
+        str(item).lower() for item in get_section_setting("unsubscribe", "safe_senders", [])
+    ]
     return any(re.search(pattern, sender_lower) for pattern in patterns)
 
 
@@ -162,7 +170,11 @@ async def browser_unsubscribe(url: str, sender_domain: str) -> tuple[bool, str |
                 for selector in ("button", "input[type=submit]", "a"):
                     elements = await page.query_selector_all(selector)
                     for element in elements:
-                        text = (await element.inner_text() if selector != "input[type=submit]" else await element.get_attribute("value")) or ""
+                        text = (
+                            await element.inner_text()
+                            if selector != "input[type=submit]"
+                            else await element.get_attribute("value")
+                        ) or ""
                         if any(term in text.lower() for term in CLICK_TEXT):
                             target = element
                             break
@@ -246,7 +258,9 @@ async def process_candidate(candidate: dict) -> dict:
         elif method == "http_get":
             success, message = _http_get(url)
         elif method == "browser_agent":
-            success, message, screenshot_path = await browser_unsubscribe(url, candidate.get("sender_domain") or "")
+            success, message, screenshot_path = await browser_unsubscribe(
+                url, candidate.get("sender_domain") or ""
+            )
         else:
             success, message = _mailto(url)
         _log(sender, url, method, "success" if success else "failed", screenshot_path, message)
@@ -255,10 +269,16 @@ async def process_candidate(candidate: dict) -> dict:
         errors.append(f"{method} {url}: {message}")
     if not attempts:
         _log(sender, "", "browser_agent", "needs_review", None, "no unsubscribe target found")
-    return {"sender": sender, "status": "failed", "error": "; ".join(errors) or "no unsubscribe target found"}
+    return {
+        "sender": sender,
+        "status": "failed",
+        "error": "; ".join(errors) or "no unsubscribe target found",
+    }
 
 
-async def process_unsubscribe_list(dry_run: bool = True, execute: bool = False, yes: bool = False) -> dict:
+async def process_unsubscribe_list(
+    dry_run: bool = True, execute: bool = False, yes: bool = False
+) -> dict:
     candidates = unsubscribe_candidates()
     if dry_run or not execute:
         return {"dry_run": True, "total_found": len(candidates), "sample": candidates[:20]}

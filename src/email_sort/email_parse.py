@@ -96,7 +96,9 @@ def message_record(message: Message, source: str) -> dict:
     body_text, body_html, has_attachment = extract_body(message)
     message_id = get_header(headers, "message-id")
     if not message_id:
-        message_id = f"{source}:{get_header(headers, 'date')}:{sender}:{get_header(headers, 'subject')}"
+        message_id = (
+            f"{source}:{get_header(headers, 'date')}:{sender}:{get_header(headers, 'subject')}"
+        )
     return {
         "source": source,
         "message_id": sqlite_safe_text(message_id),
@@ -116,7 +118,10 @@ def message_record(message: Message, source: str) -> dict:
         "list_unsubscribe": get_header(headers, "list-unsubscribe"),
         "list_unsubscribe_post": get_header(headers, "list-unsubscribe-post"),
         "dmarc_fail": int(auth_flag(auth_results, "dmarc", "fail")),
-        "spf_fail": int(auth_flag(auth_results, "spf", "fail") or "spf=fail" in get_header(headers, "received-spf").lower()),
+        "spf_fail": int(
+            auth_flag(auth_results, "spf", "fail")
+            or "spf=fail" in get_header(headers, "received-spf").lower()
+        ),
         "arc_auth_results": arc_auth_results,
         "has_arc": int(has_arc),
         "dkim_pass": int(auth_flag(auth_results, "dkim", "pass")),
@@ -157,7 +162,9 @@ def upsert_email(cursor, table_name: str, record: dict) -> None:
         "delivered_to",
     ]
     placeholders = ", ".join("?" for _ in fields)
-    update_clause = ", ".join(f"{field}=excluded.{field}" for field in fields if field != "message_id")
+    update_clause = ", ".join(
+        f"{field}=excluded.{field}" for field in fields if field != "message_id"
+    )
     cursor.execute(
         f"""
         INSERT INTO {table_name} ({", ".join(fields)})

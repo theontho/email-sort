@@ -20,8 +20,8 @@ class RateColumn(ProgressColumn):
         return Text(f"{speed:.2f} it/s", style="bold blue")
 
 
-def progress_columns(*, spinner: bool = False, bar_width: int | None = 40):
-    columns = []
+def progress_columns(*, spinner: bool = False, bar_width: int | None = 40) -> list[ProgressColumn]:
+    columns: list[ProgressColumn] = []
     if spinner:
         columns.append(SpinnerColumn())
     columns.extend(

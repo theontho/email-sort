@@ -64,7 +64,17 @@ def export_unsubscribe_list(path: str = "out/unsubscribe_list.csv") -> None:
         )
         with open(path, "w", newline="") as file:
             writer = csv.writer(file)
-            writer.writerow(["sender", "sender_domain", "category", "is_digest", "count", "list_unsubscribe", "body_links"])
+            writer.writerow(
+                [
+                    "sender",
+                    "sender_domain",
+                    "category",
+                    "is_digest",
+                    "count",
+                    "list_unsubscribe",
+                    "body_links",
+                ]
+            )
             for row in cursor.fetchall():
                 writer.writerow(
                     [

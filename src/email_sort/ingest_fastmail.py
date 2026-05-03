@@ -10,7 +10,9 @@ from email_sort.progress import make_progress
 
 def _first_header(headers_list, name):
     lower_name = name.lower()
-    return next((h.get("value", "") for h in headers_list if h.get("name", "").lower() == lower_name), "")
+    return next(
+        (h.get("value", "") for h in headers_list if h.get("name", "").lower() == lower_name), ""
+    )
 
 
 def _auth_flag(auth_results: str, name: str, result: str) -> bool:

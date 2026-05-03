@@ -29,13 +29,21 @@ def generate_sieve(output_path: str | None = None) -> str:
             """
         )
         for row in cursor.fetchall():
-            lines.extend([f'if {_address_test(row["sender"])} {{', "    keep;", "    stop;", "}", ""])
+            lines.extend(
+                [f"if {_address_test(row['sender'])} {{", "    keep;", "    stop;", "}", ""]
+            )
 
         cursor.execute("SELECT sender, override_category FROM sender_overrides ORDER BY sender")
         for row in cursor.fetchall():
             folder = _escape(row["override_category"] or "Other")
             lines.extend(
-                [f'if {_address_test(row["sender"])} {{', f'    fileinto "{folder}";', "    stop;", "}", ""]
+                [
+                    f"if {_address_test(row['sender'])} {{",
+                    f'    fileinto "{folder}";',
+                    "    stop;",
+                    "}",
+                    "",
+                ]
             )
 
         cursor.execute(
@@ -46,7 +54,15 @@ def generate_sieve(output_path: str | None = None) -> str:
             """
         )
         for row in cursor.fetchall():
-            lines.extend([f'if {_address_test(row["sender"])} {{', '    fileinto "Spam";', "    stop;", "}", ""])
+            lines.extend(
+                [
+                    f"if {_address_test(row['sender'])} {{",
+                    '    fileinto "Spam";',
+                    "    stop;",
+                    "}",
+                    "",
+                ]
+            )
 
         cursor.execute(
             """
@@ -57,7 +73,13 @@ def generate_sieve(output_path: str | None = None) -> str:
         )
         for row in cursor.fetchall():
             lines.extend(
-                [f'if {_address_test(row["sender"])} {{', '    fileinto "Promotional";', "    stop;", "}", ""]
+                [
+                    f"if {_address_test(row['sender'])} {{",
+                    '    fileinto "Promotional";',
+                    "    stop;",
+                    "}",
+                    "",
+                ]
             )
 
         cursor.execute(
@@ -69,7 +91,13 @@ def generate_sieve(output_path: str | None = None) -> str:
         )
         for row in cursor.fetchall():
             lines.extend(
-                [f'if {_address_test(row["sender"])} {{', '    fileinto "Suspicious";', "    stop;", "}", ""]
+                [
+                    f"if {_address_test(row['sender'])} {{",
+                    '    fileinto "Suspicious";',
+                    "    stop;",
+                    "}",
+                    "",
+                ]
             )
     finally:
         conn.close()

@@ -50,7 +50,9 @@ def ingest_imap(watch: bool = False, table_name: str = "fastmail") -> None:
                         for message_num in message_ids:
                             status, fetched = client.fetch(message_num, "(RFC822)")
                             if status == "OK" and fetched and isinstance(fetched[0], tuple):
-                                message = email.message_from_bytes(fetched[0][1], policy=policy.default)
+                                message = email.message_from_bytes(
+                                    fetched[0][1], policy=policy.default
+                                )
                                 record = message_record(message, "imap")
                                 upsert_email(cursor, table_name, record)
                                 processed += 1
@@ -69,7 +71,9 @@ def ingest_imap(watch: bool = False, table_name: str = "fastmail") -> None:
                         if processed % 500 == 0:
                             conn.commit()
                         if time.time() - last_update >= 60:
-                            print(f"[{time.strftime('%H:%M:%S')}] IMAP ingested {processed} messages")
+                            print(
+                                f"[{time.strftime('%H:%M:%S')}] IMAP ingested {processed} messages"
+                            )
                             last_update = time.time()
                 conn.commit()
             if not watch:

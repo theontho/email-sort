@@ -70,7 +70,11 @@ def migrate(verbose: bool = True) -> None:
     try:
         _ensure_base_schema(conn)
         current_version = _get_current_version(conn)
-        pending = [(version, path) for version, path in _available_migrations() if version > current_version]
+        pending = [
+            (version, path)
+            for version, path in _available_migrations()
+            if version > current_version
+        ]
 
         if not pending:
             if verbose:
@@ -87,7 +91,9 @@ def migrate(verbose: bool = True) -> None:
                     python_migration(conn)
                 else:
                     _apply_sql(conn, path)
-                cursor.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (?)", (version,))
+                cursor.execute(
+                    "INSERT OR REPLACE INTO schema_version (version) VALUES (?)", (version,)
+                )
                 conn.commit()
             except Exception:
                 conn.rollback()

@@ -124,13 +124,19 @@ def command_unsubscribe(args):
         process_unsubscribe_list(dry_run=not args.execute, execute=args.execute, yes=args.yes)
     )
     if result.get("dry_run"):
-        console.print(f"Dry run found [green]{result['total_found']}[/green] unsubscribe candidates")
+        console.print(
+            f"Dry run found [green]{result['total_found']}[/green] unsubscribe candidates"
+        )
         table = Table(title="Sample Candidates")
         table.add_column("Sender")
         table.add_column("Category")
         table.add_column("List-Unsubscribe")
         for row in result.get("sample", []):
-            table.add_row(row.get("sender") or "", row.get("category") or "", row.get("list_unsubscribe") or "")
+            table.add_row(
+                row.get("sender") or "",
+                row.get("category") or "",
+                row.get("list_unsubscribe") or "",
+            )
         console.print(table)
     elif result.get("cancelled"):
         console.print("Unsubscribe execution cancelled")
@@ -154,9 +160,16 @@ def command_verify_unsubscribes(args):
     table.add_column("Emails After", justify="right")
     table.add_column("Last Received")
     for row in failed:
-        table.add_row(row["sender"], row["unsubscribed_at"], str(row["email_count"]), row["last_received"] or "")
+        table.add_row(
+            row["sender"],
+            row["unsubscribed_at"],
+            str(row["email_count"]),
+            row["last_received"] or "",
+        )
     console.print(table)
-    console.print("Suggested escalation: add these senders to server-side block list or a Sieve reject rule.")
+    console.print(
+        "Suggested escalation: add these senders to server-side block list or a Sieve reject rule."
+    )
 
 
 def command_sieve(args):
@@ -196,7 +209,9 @@ def command_stats(args):
             table.add_column("Value", justify="right")
             cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
             total = cursor.fetchone()[0]
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE category IS NOT NULL AND category != ''")
+            cursor.execute(
+                f"SELECT COUNT(*) FROM {table_name} WHERE category IS NOT NULL AND category != ''"
+            )
             classified = cursor.fetchone()[0]
             cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE is_duplicate = 1")
             duplicates = cursor.fetchone()[0]
@@ -254,7 +269,9 @@ def build_parser():
 
     ingest = subparsers.add_parser("ingest", help="Ingest emails")
     ingest_sub = ingest.add_subparsers(dest="source", required=True)
-    ingest_sub.add_parser("fastmail", help="Ingest from Fastmail JMAP").set_defaults(func=command_ingest)
+    ingest_sub.add_parser("fastmail", help="Ingest from Fastmail JMAP").set_defaults(
+        func=command_ingest
+    )
     mbox = ingest_sub.add_parser("mbox", help="Ingest from mbox")
     mbox.add_argument("mbox_path")
     mbox.add_argument("--table", default="google_emails")
@@ -323,11 +340,17 @@ def build_parser():
     subparsers.add_parser("watch").set_defaults(func=command_watch)
 
     legacy_fastmail = subparsers.add_parser("ingest-fastmail")
-    legacy_fastmail.set_defaults(func=lambda args: command_ingest(argparse.Namespace(source="fastmail")))
+    legacy_fastmail.set_defaults(
+        func=lambda args: command_ingest(argparse.Namespace(source="fastmail"))
+    )
     legacy_mbox = subparsers.add_parser("ingest-mbox")
     legacy_mbox.add_argument("mbox_path")
     legacy_mbox.add_argument("--table", default="google_emails")
-    legacy_mbox.set_defaults(func=lambda args: command_ingest(argparse.Namespace(source="mbox", mbox_path=args.mbox_path, table=args.table)))
+    legacy_mbox.set_defaults(
+        func=lambda args: command_ingest(
+            argparse.Namespace(source="mbox", mbox_path=args.mbox_path, table=args.table)
+        )
+    )
 
     return parser
 

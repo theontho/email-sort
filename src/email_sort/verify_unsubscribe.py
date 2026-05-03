@@ -33,7 +33,9 @@ def check_failed_unsubscribes() -> list[dict]:
                 )
                 row = cursor.fetchone()
                 count += row["count"] or 0
-                if row["last_received"] and (not last_received or row["last_received"] > last_received):
+                if row["last_received"] and (
+                    not last_received or row["last_received"] > last_received
+                ):
                     last_received = row["last_received"]
             if count:
                 item = {
@@ -54,7 +56,12 @@ def check_failed_unsubscribes() -> list[dict]:
                         last_received = excluded.last_received,
                         checked_at = CURRENT_TIMESTAMP
                     """,
-                    (item["sender"], item["unsubscribed_at"], item["email_count"], item["last_received"]),
+                    (
+                        item["sender"],
+                        item["unsubscribed_at"],
+                        item["email_count"],
+                        item["last_received"],
+                    ),
                 )
         conn.commit()
         return failed

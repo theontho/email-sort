@@ -27,7 +27,9 @@ def _override_keys(sender: str | None, sender_domain: str | None) -> Iterable[st
         yield f"@{sender_domain.lower()}"
 
 
-def _maybe_create_overrides(cursor, sender: str, sender_domain: str, category: str, action: str) -> list[str]:
+def _maybe_create_overrides(
+    cursor, sender: str, sender_domain: str, category: str, action: str
+) -> list[str]:
     created: list[str] = []
     for key in _override_keys(sender, sender_domain):
         if key.startswith("@"):
@@ -173,7 +175,9 @@ def apply_sender_prefilters(table_name: str) -> int:
         for row in cursor.fetchall():
             override = get_sender_override(row["sender"], row["sender_domain"])
             if override:
-                updates.append((override["override_category"], override["override_action"], row["id"]))
+                updates.append(
+                    (override["override_category"], override["override_action"], row["id"])
+                )
         if updates:
             cursor.executemany(
                 f"UPDATE {table_name} SET category = ?, action = ?, confidence = COALESCE(confidence, 1.0) WHERE id = ?",

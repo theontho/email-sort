@@ -71,7 +71,11 @@ def _update_duplicate_and_digest_flags(cursor, table_name):
     for group in by_sender_subject.values():
         group.sort(key=lambda item: item["parsed_date"])
         for idx, row in enumerate(group):
-            window = [other for other in group if abs((other["parsed_date"] - row["parsed_date"]).total_seconds()) <= 86400]
+            window = [
+                other
+                for other in group
+                if abs((other["parsed_date"] - row["parsed_date"]).total_seconds()) <= 86400
+            ]
             if len(window) > 1:
                 latest = max(window, key=lambda item: item["parsed_date"])
                 duplicate_ids.update(item["id"] for item in window if item["id"] != latest["id"])
@@ -141,7 +145,9 @@ def run_heuristics():
             body_html = row["body_html"] or ""
             arc_auth_results = (row["arc_auth_results"] or "").lower()
             dmarc_arc_override = int(
-                bool(row["dmarc_fail"]) and bool(row["has_arc"]) and "dmarc=pass" in arc_auth_results
+                bool(row["dmarc_fail"])
+                and bool(row["has_arc"])
+                and "dmarc=pass" in arc_auth_results
             )
             headers = {}
             if headers_raw:

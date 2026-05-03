@@ -39,7 +39,9 @@ def parse_mbox(mbox_path, table_name="google_emails"):
                         upsert_email(cursor, table_name, record)
                     except Exception as exc:
                         skipped += 1
-                        progress.console.print(f"[yellow]Skipping malformed message:[/yellow] {exc}")
+                        progress.console.print(
+                            f"[yellow]Skipping malformed message:[/yellow] {exc}"
+                        )
                     processed += 1
                     progress.advance(task)
                     if processed % 1000 == 0:
