@@ -100,7 +100,7 @@ def create_email_table(c, table_name):
 def init_db():
     conn = get_db()
     c = conn.cursor()
-    create_email_table(c, "emails")
+    create_email_table(c, "fastmail")
     create_email_table(c, "google_emails")
     conn.commit()
     conn.close()

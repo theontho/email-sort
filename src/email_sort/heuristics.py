@@ -27,7 +27,7 @@ def run_heuristics():
     conn = get_db()
     c = conn.cursor()
 
-    for table_name in ["emails", "google_emails"]:
+    for table_name in ["fastmail", "google_emails"]:
         c.execute(f"SELECT id, subject, snippet, to_address, headers, body_html FROM {table_name}")
         rows = c.fetchall()
 

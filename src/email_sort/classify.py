@@ -136,7 +136,7 @@ class StatusDisplay:
         return create_display_table()
 
 
-def classify_single_email(worker_pool, row, pbar, pbar_task, table_name="emails"):
+def classify_single_email(worker_pool, row, pbar, pbar_task, table_name="fastmail"):
     if stop_event.is_set():
         return
 
@@ -283,14 +283,14 @@ class SpeedColumn(ProgressColumn):
         return Text(f"{speed:.2f} emails/s", style="bold blue")
 
 
-def classify_emails(limit=None, table_name="emails", window=100, reclassify=None):
+def classify_emails(limit=None, table_name="fastmail", window=100, reclassify=None):
     global finished_tasks
     finished_tasks = collections.deque(maxlen=window)
 
     conn = get_db()
     c = conn.cursor()
 
-    tables = ["emails", "google_emails"] if table_name == "all" else [table_name]
+    tables = ["fastmail", "google_emails"] if table_name == "all" else [table_name]
 
     # Calculate per-table limit to ensure variety if a limit is provided
     table_limit = None

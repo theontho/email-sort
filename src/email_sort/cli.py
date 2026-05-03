@@ -33,7 +33,7 @@ def command_detect_language(args):
     from email_sort.detect_language import detect_languages
 
     if args.table == "all":
-        detect_languages("emails", args.batch)
+        detect_languages("fastmail", args.batch)
         detect_languages("google_emails", args.batch)
     else:
         detect_languages(args.table, args.batch)
@@ -100,14 +100,14 @@ def command_watch(args):
             conn = get_db()
             c = conn.cursor()
 
-            c.execute("SELECT COUNT(*) FROM emails")
+            c.execute("SELECT COUNT(*) FROM fastmail")
             total = c.fetchone()[0]
 
-            c.execute("SELECT COUNT(*) FROM emails WHERE category IS NOT NULL")
+            c.execute("SELECT COUNT(*) FROM fastmail WHERE category IS NOT NULL")
             classified = c.fetchone()[0]
 
             c.execute(
-                "SELECT COUNT(*) FROM emails WHERE language != 'en' OR is_not_for_me = 1 OR dmarc_fail = 1"
+                "SELECT COUNT(*) FROM fastmail WHERE language != 'en' OR is_not_for_me = 1 OR dmarc_fail = 1"
             )
             filtered = c.fetchone()[0]
 
@@ -159,8 +159,8 @@ def main():
     parser_mbox.add_argument(
         "--table",
         type=str,
-        default="emails",
-        help="Database table name (default: emails)",
+        default="fastmail",
+        help="Database table name (default: fastmail)",
     )
     parser_mbox.set_defaults(func=command_ingest_mbox)
 
@@ -188,7 +188,7 @@ def main():
         "--table",
         type=str,
         default="all",
-        help="Table to process (emails, google_emails, or all)",
+        help="Table to process (fastmail, google_emails, or all)",
     )
     parser_lang.add_argument("--batch", type=int, default=1000, help="Batch size for processing")
     parser_lang.set_defaults(func=command_detect_language)

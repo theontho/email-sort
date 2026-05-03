@@ -62,7 +62,7 @@ def export_results():
                SUM(dmarc_fail) as dmarc_failures,
                MIN(date) as first_seen,
                MAX(date) as last_seen
-        FROM emails
+        FROM fastmail
         GROUP BY sender_domain
         ORDER BY total_emails DESC
     """)
@@ -93,7 +93,7 @@ def export_results():
     print("Generating ban_list.csv...")
     c.execute("""
         SELECT sender, sender_domain, language, is_not_for_me, category, dmarc_fail
-        FROM emails
+        FROM fastmail
         WHERE language != 'en' OR is_not_for_me = 1 OR category = 'Spam' OR dmarc_fail = 1
         GROUP BY sender_domain
         ORDER BY count(id) DESC
@@ -114,7 +114,7 @@ def export_results():
     print("Generating unsubscribe_list.csv...")
     c.execute("""
         SELECT id, sender, list_unsubscribe, list_unsubscribe_post, category, body_unsubscribe_links
-        FROM emails
+        FROM fastmail
         WHERE (list_unsubscribe != '' OR body_unsubscribe_links IS NOT NULL)
         AND category IN ('Promotional', 'Newsletter', 'Spam', 'Social', 'Tech', 'Shopping', 'Health')
         GROUP BY sender

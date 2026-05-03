@@ -25,7 +25,7 @@ def decode_str(s):
         return str(s)
 
 
-def parse_mbox(mbox_path, table_name="emails"):
+def parse_mbox(mbox_path, table_name="fastmail"):
     print(f"Opening {mbox_path}...")
     print("Indexing MBOX (this may take several minutes for 10GB+ files)...")
     mbox = mailbox.mbox(mbox_path)
@@ -186,5 +186,5 @@ if __name__ == "__main__":
         sys.exit(1)
 
     mbox_path = sys.argv[1]
-    table_name = sys.argv[2] if len(sys.argv) > 2 else "emails"
+    table_name = sys.argv[2] if len(sys.argv) > 2 else "fastmail"
     parse_mbox(mbox_path, table_name)

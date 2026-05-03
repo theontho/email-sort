@@ -186,7 +186,7 @@ def ingest_fastmail():
                 # Use INSERT OR REPLACE to update existing snippets
                 c.execute(
                     """
-                    INSERT INTO emails 
+                    INSERT INTO fastmail 
                     (source, message_id, sender, sender_domain, to_address, subject, date, snippet, body_text, body_html, list_unsubscribe, list_unsubscribe_post, dmarc_fail, spf_fail, cc, bcc, reply_to, keywords, mailbox_ids, has_attachment, headers)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(message_id) DO UPDATE SET 

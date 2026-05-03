@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # Language detection logic
 
 
-def detect_languages(table_name="emails", batch_size=1000):
+def detect_languages(table_name="fastmail", batch_size=1000):
     download_model()
     if not os.path.exists(MODEL_PATH):
         logger.error(f"Model not found and could not be downloaded to {MODEL_PATH}")
@@ -101,13 +101,13 @@ if __name__ == "__main__":
         "--table",
         type=str,
         default="all",
-        help="Table to process (emails, google_emails, or all)",
+        help="Table to process (fastmail, google_emails, or all)",
     )
     parser.add_argument("--batch", type=int, default=1000, help="Batch size for processing")
     args = parser.parse_args()
 
     if args.table == "all":
-        detect_languages("emails", args.batch)
+        detect_languages("fastmail", args.batch)
         detect_languages("google_emails", args.batch)
     else:
         detect_languages(args.table, args.batch)
