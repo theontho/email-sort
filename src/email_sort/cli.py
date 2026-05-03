@@ -8,9 +8,10 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from email_sort.config import get_config_dir, get_config_path
-from email_sort.db import DB_PATH, EMAIL_TABLE, get_db
-
+from email_sort import __version__
+from email_sort.config import get_config, get_config_dir, get_config_path
+from email_sort.db import EMAIL_TABLE, _get_db_path, get_db
+from email_sort.log import setup_logging
 
 console = Console()
 
@@ -46,7 +47,7 @@ def command_init_db(args):
     from email_sort.db import init_db
 
     init_db()
-    console.print(f"Database initialized at [cyan]{DB_PATH}[/cyan]")
+    console.print(f"Database initialized at [cyan]{_get_db_path()}[/cyan]")
 
 
 def command_migrate(args):
@@ -253,27 +254,45 @@ def command_stats(args):
 
 
 def command_config(args):
+    config = get_config()
     table = Table(title="Email Sort Configuration")
     table.add_column("Path")
     table.add_column("Value")
     table.add_row("Config File", str(get_config_path()))
     table.add_row("Config Dir", str(get_config_dir()))
-    table.add_row("Database", str(DB_PATH))
+    table.add_row("Database", str(_get_db_path()))
     table.add_row("Classification Log", str(get_config_dir() / "classification.log"))
+    table.add_row("Log Level", config.general.log_level)
+    table.add_row("Servers", ", ".join(server.name for server in config.servers) or "<none>")
     console.print(table)
+
+
+def command_precheck(args):
+    from email_sort.precheck import run_precheck
+
+    ok, results = run_precheck(check_servers=args.check_servers)
+    for result in results:
+        console.print(result)
+    if not ok:
+        raise SystemExit(1)
 
 
 def command_watch(args):
     while True:
-        os.system("cls" if os.name == "nt" else "clear")
+        console.clear()
         command_stats(args)
         time.sleep(5)
 
 
 def build_parser():
     parser = argparse.ArgumentParser(description="email-sort CLI toolkit")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--quiet", "-q", action="store_true")
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     ingest = subparsers.add_parser("ingest", help="Ingest emails")
@@ -352,6 +371,9 @@ def build_parser():
 
     subparsers.add_parser("stats").set_defaults(func=command_stats)
     subparsers.add_parser("config").set_defaults(func=command_config)
+    precheck = subparsers.add_parser("precheck")
+    precheck.add_argument("--check-servers", action="store_true")
+    precheck.set_defaults(func=command_precheck)
     subparsers.add_parser("watch").set_defaults(func=command_watch)
 
     legacy_fastmail = subparsers.add_parser("ingest-fastmail")
@@ -375,9 +397,13 @@ def build_parser():
 def main():
     parser = build_parser()
     args = parser.parse_args()
+    config = get_config()
+    log_level = args.log_level or ("DEBUG" if args.verbose else config.general.log_level)
     if args.quiet:
         sys.stdout = open(os.devnull, "w")
         console.file = sys.stdout
+        log_level = "ERROR"
+    setup_logging(level=log_level, log_file=str(get_config_dir() / "email-sort.log"))
     if not hasattr(args, "func"):
         parser.print_help()
         return

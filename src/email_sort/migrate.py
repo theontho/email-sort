@@ -2,14 +2,13 @@ import sqlite3
 from pathlib import Path
 
 from email_sort.db import (
-    DB_PATH,
     EMAIL_TABLE,
     LEGACY_EMAIL_TABLES,
+    _get_db_path,
     add_column_if_missing,
     create_email_table,
     table_exists,
 )
-
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
@@ -143,11 +142,12 @@ PYTHON_MIGRATIONS = {
 
 
 def migrate(verbose: bool = True) -> None:
+    db_path = _get_db_path()
     if verbose:
-        print(f"Using database: {DB_PATH}")
+        print(f"Using database: {db_path}")
 
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH), timeout=30)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), timeout=30)
     try:
         _ensure_base_schema(conn)
         _migrate_legacy_email_tables(conn)

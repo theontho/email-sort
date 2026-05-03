@@ -1,6 +1,7 @@
 import argparse
 import collections
 import logging
+import os
 import queue
 import threading
 import time
@@ -8,17 +9,16 @@ from concurrent.futures import ThreadPoolExecutor
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from rich.console import Console
+from rich.layout import Layout
+from rich.live import Live
+from rich.table import Table
 
-from email_sort.config import get_setting, get_servers, get_config_dir
+from email_sort.config import get_config_dir, get_servers, get_setting
 from email_sort.corrections import apply_sender_prefilters
 from email_sort.db import EMAIL_TABLE, get_db
 from email_sort.progress import make_progress
 from email_sort.sender_analysis import apply_has_user_reply_prefilter
-
-from rich.live import Live
-from rich.table import Table
-from rich.console import Console
-from rich.layout import Layout
 
 load_dotenv()
 
@@ -66,9 +66,8 @@ def get_worker_pool():
                 worker_pool.put((client, model_name, url, server_name))
                 total_workers += 1
     else:
-        # Fallback to env vars or defaults
-        base_url = get_setting("litellm_url", "http://localhost:1234/v1")
-        workers = int(get_setting("max_workers", 1))
+        base_url = os.environ.get("LITELLM_URL", "http://localhost:1234/v1")
+        workers = int(os.environ.get("MAX_WORKERS", "1"))
 
         server_name = base_url.split("//")[-1].split(":")[0]
         client = OpenAI(base_url=base_url, api_key=default_api_key)

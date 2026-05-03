@@ -10,24 +10,12 @@ from email_sort.email_parse import message_record, upsert_email
 from email_sort.progress import make_progress
 
 
-def _as_bool(value) -> bool:
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() not in {"0", "false", "no", "off"}
-
-
-def _as_list(value) -> list[str]:
-    if isinstance(value, str):
-        return [item.strip() for item in value.split(",") if item.strip()]
-    return list(value)
-
-
 def _connect():
     host = get_section_setting("imap", "host")
     port = int(get_section_setting("imap", "port", 993))
     username = get_section_setting("imap", "username")
     password = get_section_setting("imap", "password")
-    use_ssl = _as_bool(get_section_setting("imap", "use_ssl", True))
+    use_ssl = get_section_setting("imap", "use_ssl", True)
     if not host or not username or not password:
         raise ValueError("Missing [imap] host, username, or password in config")
     client = imaplib.IMAP4_SSL(host, port) if use_ssl else imaplib.IMAP4(host, port)
@@ -37,7 +25,7 @@ def _connect():
 
 def ingest_imap(watch: bool = False, source: str = "imap") -> None:
     init_db()
-    folders = _as_list(get_section_setting("imap", "folders", ["INBOX"]))
+    folders = get_section_setting("imap", "folders", ["INBOX"])
     client = _connect()
     conn = get_db()
     cursor = conn.cursor()

@@ -1,10 +1,15 @@
 import email
 from email import policy
+from pathlib import Path
 
+import pytest
+
+from email_sort.classify import parse_classification
+from email_sort.config import AppConfig, get_section_setting, get_setting, load_config
 from email_sort.db import EMAIL_TABLE, create_email_table
 from email_sort.email_parse import message_record, upsert_email
-from email_sort.classify import parse_classification
-from email_sort.ingest_imap import _as_bool, _as_list
+from email_sort.log import setup_logging
+from email_sort.precheck import _writable_dir, run_precheck
 from email_sort.sender_analysis import _addresses_contain_domain
 from email_sort.unsubscribe_agent import _is_safe_url
 
@@ -106,12 +111,62 @@ def test_parse_classification_normalizes_case():
     )
 
 
-def test_imap_env_value_parsing():
-    assert _as_bool("false") is False
-    assert _as_bool("true") is True
-    assert _as_list("INBOX,Archive") == ["INBOX", "Archive"]
-
-
 def test_domain_matching_uses_parsed_addresses():
     assert _addresses_contain_domain("User <user@mail.com>", "mail.com") is True
     assert _addresses_contain_domain("User <user@gmail.com>", "mail.com") is False
+
+
+def test_typed_config_rejects_unknown_keys():
+    with pytest.raises(ValueError):
+        AppConfig.model_validate({"general": {"unknown": True}})
+
+
+def test_typed_config_requires_list_shapes():
+    with pytest.raises(ValueError):
+        AppConfig.model_validate({"imap": {"folders": "INBOX,Archive"}})
+
+
+def test_env_fallback_for_unconfigured_secrets(monkeypatch):
+    monkeypatch.setenv("FASTMAIL_TOKEN", "fastmail-secret")
+    monkeypatch.setenv("SMTP_PASSWORD", "smtp-secret")
+    load_config(reload=True)
+
+    assert get_setting("fastmail_token") == "fastmail-secret"
+    assert get_section_setting("smtp", "password") == "smtp-secret"
+
+
+def test_writable_dir_handles_mkdir_errors(monkeypatch, tmp_path):
+    def fail_mkdir(self, *args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "mkdir", fail_mkdir)
+
+    assert _writable_dir(tmp_path / "blocked") is False
+
+
+def test_precheck_fails_on_unhealthy_server(monkeypatch, tmp_path):
+    config_path = tmp_path / "conf.toml"
+    config_path.write_text('[[servers]]\nname = "bad"\nurl = "http://example.invalid/v1"\n')
+
+    class Response:
+        ok = False
+        status_code = 500
+
+    monkeypatch.setenv("EMAIL_SORT_CONFIG", str(config_path))
+    monkeypatch.setattr("email_sort.precheck.socket.getaddrinfo", lambda *args: [])
+    monkeypatch.setattr("email_sort.precheck.requests.get", lambda *args, **kwargs: Response())
+    load_config(reload=True)
+
+    ok, results = run_precheck(check_servers=True)
+
+    assert ok is False
+    assert "LLM server unhealthy: bad HTTP 500" in results
+
+
+def test_setup_logging_survives_unwritable_file_handler(monkeypatch):
+    def fail_file_handler(*args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr("logging.FileHandler", fail_file_handler)
+
+    setup_logging(log_file="/blocked/email-sort.log")

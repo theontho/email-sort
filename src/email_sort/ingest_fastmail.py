@@ -1,8 +1,9 @@
-import requests
 import json
 import re
 import sys
 import time
+
+import requests
 
 from email_sort.config import get_setting
 from email_sort.db import get_db, init_db
@@ -36,7 +37,7 @@ def _fetch_all_email_ids(api_url: str, headers: dict, account_id: str) -> list[s
                 ]
             ],
         }
-        res = requests.post(api_url, headers=headers, json=query_req)
+        res = requests.post(api_url, headers=headers, json=query_req, timeout=60)
         res.raise_for_status()
         query_res = res.json()["methodResponses"][0][1]
         batch = query_res.get("ids", [])
@@ -62,7 +63,7 @@ def ingest_fastmail(source: str = "fastmail"):
 
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    res = requests.get("https://api.fastmail.com/jmap/session", headers=headers)
+    res = requests.get("https://api.fastmail.com/jmap/session", headers=headers, timeout=60)
     res.raise_for_status()
     session = res.json()
 
@@ -134,7 +135,7 @@ def ingest_fastmail(source: str = "fastmail"):
             ],
         }
 
-        res = requests.post(api_url, headers=headers, json=fetch_req)
+        res = requests.post(api_url, headers=headers, json=fetch_req, timeout=60)
         res.raise_for_status()
         fetch_res = res.json()
 
@@ -222,10 +223,10 @@ def ingest_fastmail(source: str = "fastmail"):
                 # Use INSERT OR REPLACE to update existing snippets
                 c.execute(
                     """
-                    INSERT INTO emails 
+                    INSERT INTO emails
                     (source, provider_id, message_id, sender, sender_domain, to_address, subject, date, snippet, body_text, body_html, list_unsubscribe, list_unsubscribe_post, dmarc_fail, spf_fail, cc, bcc, reply_to, keywords, mailbox_ids, has_attachment, headers, arc_auth_results, has_arc, dkim_pass, dmarc_arc_override)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(source, provider_id) DO UPDATE SET 
+                    ON CONFLICT(source, provider_id) DO UPDATE SET
                         message_id=excluded.message_id,
                         sender=excluded.sender,
                         sender_domain=excluded.sender_domain,

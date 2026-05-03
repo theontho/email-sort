@@ -4,7 +4,6 @@ from pathlib import Path
 
 from email_sort.config import get_config_dir, get_setting
 
-
 EMAIL_TABLE = "emails"
 EMAIL_TABLES = (EMAIL_TABLE,)
 LEGACY_EMAIL_TABLES = ("fastmail", "google_emails")
@@ -16,7 +15,7 @@ def _get_db_path() -> Path:
     Order of precedence:
     1. EMAIL_SORT_DB environment variable
     2. data_dir setting in conf.toml
-    3. Platform-specific default (CONFIG_DIR/data/emails.db)
+    3. Platform-specific default (config dir/data/emails.db)
     """
     env_path = os.environ.get("EMAIL_SORT_DB")
     if env_path:
@@ -27,9 +26,6 @@ def _get_db_path() -> Path:
         return Path(data_dir).expanduser() / "emails.db"
 
     return get_config_dir() / "data" / "emails.db"
-
-
-DB_PATH = _get_db_path()
 
 
 def get_db():
@@ -165,4 +161,4 @@ def init_db():
 
 if __name__ == "__main__":
     init_db()
-    print(f"Database initialized at {DB_PATH}")
+    print(f"Database initialized at {_get_db_path()}")

@@ -1,10 +1,12 @@
-import os
-import logging
 import argparse
+import logging
+import os
+
 import fasttext  # type: ignore
-from email_sort.db import EMAIL_TABLE, get_db
-from email_sort.heuristics import download_model, MODEL_PATH
+
 from email_sort.config import get_config_dir
+from email_sort.db import EMAIL_TABLE, get_db
+from email_sort.heuristics import MODEL_PATH, download_model
 from email_sort.progress import make_progress
 
 # Setup logging
@@ -57,9 +59,9 @@ def detect_languages(source=None, batch_size=1000):
         while True:
             cursor.execute(
                 f"""
-                SELECT id, subject, snippet 
-                FROM {EMAIL_TABLE} 
-                WHERE language IS NULL 
+                SELECT id, subject, snippet
+                FROM {EMAIL_TABLE}
+                WHERE language IS NULL
                 {source_filter}
                 LIMIT ?
             """,

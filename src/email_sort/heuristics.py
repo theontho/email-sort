@@ -1,17 +1,16 @@
-import fasttext  # type: ignore
+import email.utils
 import json
 import os
 import re
 import urllib.request
 import warnings
 from collections import defaultdict
-from datetime import timezone
+from datetime import UTC
 
-import email.utils
-from bs4 import BeautifulSoup
-from bs4 import XMLParsedAsHTMLWarning
+import fasttext  # type: ignore
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 
-from email_sort.config import get_setting, get_config_dir
+from email_sort.config import get_config_dir, get_setting
 from email_sort.db import EMAIL_TABLE, get_db
 
 MODEL_URL = "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin"
@@ -39,7 +38,7 @@ def _parse_date(value):
         except Exception:
             return None
     if parsed.tzinfo is not None:
-        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed.astimezone(UTC).replace(tzinfo=None)
     return parsed
 
 
@@ -78,7 +77,7 @@ def _update_duplicate_and_digest_flags(cursor):
 
     for group in by_sender_subject.values():
         group.sort(key=lambda item: item["parsed_date"])
-        for idx, row in enumerate(group):
+        for row in group:
             window = [
                 other
                 for other in group
@@ -204,7 +203,7 @@ def run_heuristics():
             heuristic_matches = {}
 
             # Helper to check headers (handles list values from ingest)
-            def get_header(name):
+            def get_header(name, headers=headers):
                 val = headers.get(name) or headers.get(name.lower())
                 if isinstance(val, list) and val:
                     return val[0]
@@ -309,19 +308,19 @@ def run_heuristics():
         # Thread-aware heuristic propagation
         print(f"Propagating thread heuristic classifications in {table_name}...")
         c.execute(f"""
-            UPDATE {table_name} 
+            UPDATE {table_name}
             SET heuristic_category = (
-                SELECT heuristic_category FROM {table_name} e2 
-                WHERE e2.thread_id = {table_name}.thread_id 
-                AND e2.heuristic_category IS NOT NULL 
+                SELECT heuristic_category FROM {table_name} e2
+                WHERE e2.thread_id = {table_name}.thread_id
+                AND e2.heuristic_category IS NOT NULL
                 AND e2.thread_id != ''
                 LIMIT 1
             )
-            WHERE heuristic_category IS NULL 
+            WHERE heuristic_category IS NULL
             AND thread_id != ''
             AND EXISTS (
-                SELECT 1 FROM {table_name} e3 
-                WHERE e3.thread_id = {table_name}.thread_id 
+                SELECT 1 FROM {table_name} e3
+                WHERE e3.thread_id = {table_name}.thread_id
                 AND e3.heuristic_category IS NOT NULL
             )
         """)
