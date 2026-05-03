@@ -111,11 +111,11 @@ def run_heuristics():
                 action = "Informational"
                 confidence = 1.0
                 heuristic_matches["List-Id"] = list_id
-            
+
             esp_headers = {
                 "X-Mailgun-Sid": get_header("X-Mailgun-Sid"),
                 "X-SES-Outgoing": get_header("X-SES-Outgoing"),
-                "X-SendGrid-Track": get_header("X-SendGrid-Track")
+                "X-SendGrid-Track": get_header("X-SendGrid-Track"),
             }
             for h_name, h_val in esp_headers.items():
                 if h_val:
