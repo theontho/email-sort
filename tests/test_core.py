@@ -10,10 +10,11 @@ from email_sort.cli import build_parser
 from email_sort.config import AppConfig, get_section_setting, get_setting, load_config
 from email_sort.db import EMAIL_TABLE, create_email_table, get_db
 from email_sort.email_parse import message_record, upsert_email
+from email_sort.export import export_unsubscribe_list
 from email_sort.log import setup_logging
 from email_sort.precheck import _writable_dir, run_precheck
 from email_sort.sender_analysis import _addresses_contain_domain, _compute, _parse_date
-from email_sort.unsubscribe_agent import _is_safe_url
+from email_sort.unsubscribe_agent import _is_safe_url, unsubscribe_candidates
 
 
 def test_upsert_uses_source_and_provider_id(sqlite_conn):
@@ -259,7 +260,10 @@ def test_classification_writer_advances_progress_per_result(monkeypatch):
     progress = FakeProgress()
     written_batches = []
 
-    monkeypatch.setattr("email_sort.classify._write_batch", lambda cursor, batch: written_batches.append(list(batch)))
+    monkeypatch.setattr(
+        "email_sort.classify._write_batch",
+        lambda cursor, batch: written_batches.append(list(batch)),
+    )
 
     classification_writer(result_queue, progress, "task", batch_size=100)
 
@@ -323,7 +327,9 @@ def test_user_reply_prefilter_uses_rule_fields(sqlite_conn, monkeypatch):
         )
         """
     )
-    cursor.execute("INSERT INTO sender_stats (sender, has_user_reply) VALUES (?, ?)", ("@example.com", 1))
+    cursor.execute(
+        "INSERT INTO sender_stats (sender, has_user_reply) VALUES (?, ?)", ("@example.com", 1)
+    )
     cursor.execute(
         f"""
         INSERT INTO {EMAIL_TABLE} (
@@ -350,7 +356,9 @@ def test_user_reply_prefilter_uses_rule_fields(sqlite_conn, monkeypatch):
     monkeypatch.setattr(sender_analysis, "get_db", lambda: ConnWrapper(sqlite_conn))
 
     assert sender_analysis.apply_has_user_reply_prefilter() == 1
-    cursor.execute(f"SELECT category, action, rule_category, rule_action, rule_source FROM {EMAIL_TABLE}")
+    cursor.execute(
+        f"SELECT category, action, rule_category, rule_action, rule_source FROM {EMAIL_TABLE}"
+    )
     row = cursor.fetchone()
     assert row["category"] is None
     assert row["action"] is None
@@ -383,6 +391,98 @@ def test_sender_analysis_uses_effective_separated_category():
 
     assert stats["promotional_ratio"] == 0.5
     assert stats["spam_ratio"] == 0.5
+
+
+def test_unsubscribe_candidates_use_effective_rule_category(sqlite_conn, monkeypatch):
+    monkeypatch.setattr("email_sort.unsubscribe_agent._safe_sender", lambda sender: False)
+    cursor = sqlite_conn.cursor()
+    create_email_table(cursor)
+    cursor.execute(
+        f"""
+        INSERT INTO {EMAIL_TABLE} (
+            source, provider_id, sender, sender_domain, list_unsubscribe,
+            rule_category, rule_action, rule_confidence, rule_source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "test",
+            "1",
+            "bot@example.com",
+            "example.com",
+            "<https://example.com/unsub>",
+            "Automated",
+            "Informational",
+            1.0,
+            "sender-override",
+        ),
+    )
+    sqlite_conn.commit()
+
+    class ConnWrapper:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def cursor(self):
+            return self.conn.cursor()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("email_sort.unsubscribe_agent.get_db", lambda: ConnWrapper(sqlite_conn))
+
+    candidates = unsubscribe_candidates()
+    assert len(candidates) == 1
+    assert candidates[0]["category"] == "Automated"
+
+
+def test_export_unsubscribe_list_uses_manual_correction_priority(sqlite_conn, tmp_path):
+    cursor = sqlite_conn.cursor()
+    create_email_table(cursor)
+    cursor.execute(
+        f"""
+        INSERT INTO {EMAIL_TABLE} (
+            source, provider_id, sender, sender_domain, list_unsubscribe,
+            category, action, confidence, classify_model,
+            rule_category, rule_action, rule_confidence, rule_source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "test",
+            "1",
+            "shop@example.com",
+            "example.com",
+            "<https://example.com/unsub>",
+            "Finance",
+            "Mandatory",
+            0.9,
+            "model@test",
+            "Promotional",
+            "Promotional",
+            1.0,
+            "manual-correction",
+        ),
+    )
+    sqlite_conn.commit()
+
+    class ConnWrapper:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def cursor(self):
+            return self.conn.cursor()
+
+        def close(self):
+            pass
+
+    output = tmp_path / "unsubscribe.csv"
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr("email_sort.export.get_db", lambda: ConnWrapper(sqlite_conn))
+        export_unsubscribe_list(str(output))
+    finally:
+        monkeypatch.undo()
+
+    assert "Promotional" in output.read_text()
 
 
 def test_typed_config_rejects_unknown_keys():
@@ -541,7 +641,9 @@ def test_heuristics_uses_progress_for_interactive_runs(monkeypatch):
 
     heuristics.run_heuristics()
 
-    task_descriptions = [task["description"] for progress in created_progress for task in progress.tasks]
+    task_descriptions = [
+        task["description"] for progress in created_progress for task in progress.tasks
+    ]
     assert "Running heuristics in emails" in task_descriptions
     assert "Preparing duplicate/digest rows" in task_descriptions
     assert "Detecting duplicate messages" in task_descriptions
@@ -618,7 +720,19 @@ def test_heuristics_incremental_and_recompute_modes(monkeypatch):
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                ("test", "old", "Old", "already done", "me@example.com", "{}", "", 0, 0, "", "2026-01-01 00:00:00"),
+                (
+                    "test",
+                    "old",
+                    "Old",
+                    "already done",
+                    "me@example.com",
+                    "{}",
+                    "",
+                    0,
+                    0,
+                    "",
+                    "2026-01-01 00:00:00",
+                ),
                 ("test", "new", "New", "needs work", "me@example.com", "{}", "", 0, 0, "", None),
             ],
         )

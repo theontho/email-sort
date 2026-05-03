@@ -118,7 +118,9 @@ def create_correction(message_id: str, corrected_category: str, corrected_action
         return {
             "message_id": message_id,
             "source": row["source"],
-            "original_category": row["category"] or row["rule_category"] or row["heuristic_category"],
+            "original_category": row["category"]
+            or row["rule_category"]
+            or row["heuristic_category"],
             "corrected_category": corrected_category,
             "original_action": row["action"] or row["rule_action"] or row["heuristic_action"],
             "corrected_action": corrected_action,

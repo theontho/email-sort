@@ -18,8 +18,9 @@ def export_ban_list(path: str = "out/ban_list.csv") -> None:
                    CASE
                        WHEN language != 'en' THEN 'Foreign Language (' || language || ')'
                        WHEN is_not_for_me = 1 THEN 'Not for me'
-                        WHEN category = 'Spam' THEN 'Spam (LLM)'
-                        WHEN rule_category = 'Spam' THEN 'Spam (Rule)'
+                       WHEN rule_source = 'manual-correction' AND rule_category = 'Spam' THEN 'Spam (Rule)'
+                       WHEN category = 'Spam' THEN 'Spam (LLM)'
+                       WHEN rule_category = 'Spam' THEN 'Spam (Rule)'
                         WHEN heuristic_category = 'Spam' THEN 'Spam (Heuristic)'
                        WHEN dmarc_fail = 1 AND dmarc_arc_override = 0 THEN 'Authentication Failed'
                        ELSE 'Unknown'
@@ -55,15 +56,30 @@ def export_unsubscribe_list(path: str = "out/unsubscribe_list.csv") -> None:
             f"""
             SELECT sender,
                    sender_domain,
-                   COALESCE(category, rule_category, heuristic_category) AS category,
+                   COALESCE(
+                       CASE WHEN rule_source = 'manual-correction' THEN rule_category END,
+                       category,
+                       rule_category,
+                       heuristic_category
+                   ) AS category,
                    MIN(list_unsubscribe) AS list_unsubscribe,
                    MIN(body_unsubscribe_links) AS body_unsubscribe_links,
                    MAX(is_digest) AS is_digest,
                    COUNT(*) AS count
             FROM {EMAIL_TABLE}
             WHERE (list_unsubscribe IS NOT NULL OR body_unsubscribe_links IS NOT NULL)
-              AND (COALESCE(category, rule_category, heuristic_category) IN ('Promotional','Newsletter','Spam','Social','Tech','Shopping','Health','Automated') OR is_digest = 1)
-            GROUP BY sender, sender_domain, COALESCE(category, rule_category, heuristic_category)
+              AND (COALESCE(
+                       CASE WHEN rule_source = 'manual-correction' THEN rule_category END,
+                       category,
+                       rule_category,
+                       heuristic_category
+                   ) IN ('Promotional','Newsletter','Spam','Social','Tech','Shopping','Health','Automated') OR is_digest = 1)
+            GROUP BY sender, sender_domain, COALESCE(
+                CASE WHEN rule_source = 'manual-correction' THEN rule_category END,
+                category,
+                rule_category,
+                heuristic_category
+            )
             ORDER BY is_digest DESC, count DESC
             """
         )

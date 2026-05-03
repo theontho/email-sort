@@ -62,19 +62,20 @@ def _looks_like_digest(subject):
     return any(re.search(pattern, subject, re.I) for pattern in patterns)
 
 
-def _log_progress(description: str, completed: int, total: int, started_at: float, last_update: float) -> float:
+def _log_progress(
+    description: str, completed: int, total: int, started_at: float, last_update: float
+) -> float:
     now = time.time()
     if now - last_update < 60:
         return last_update
     rate = completed / (now - started_at) if now > started_at else 0
-    print(
-        f"[{time.strftime('%H:%M:%S')}] {description}: {completed}/{total} "
-        f"({rate:.2f}/s)"
-    )
+    print(f"[{time.strftime('%H:%M:%S')}] {description}: {completed}/{total} ({rate:.2f}/s)")
     return now
 
 
-def _update_duplicate_and_digest_flags(cursor, table_name: str = EMAIL_TABLE, interactive: bool = False):
+def _update_duplicate_and_digest_flags(
+    cursor, table_name: str = EMAIL_TABLE, interactive: bool = False
+):
     cursor.execute(f"SELECT id, sender, subject, date FROM {table_name}")
     rows = [dict(row) for row in cursor.fetchall()]
     duplicate_ids: set[int] = set()
@@ -87,7 +88,11 @@ def _update_duplicate_and_digest_flags(cursor, table_name: str = EMAIL_TABLE, in
     try:
         started_at = time.time()
         last_update = started_at
-        task = progress.add_task("Preparing duplicate/digest rows", total=len(rows)) if progress else None
+        task = (
+            progress.add_task("Preparing duplicate/digest rows", total=len(rows))
+            if progress
+            else None
+        )
         for index, row in enumerate(rows, start=1):
             parsed = _parse_date(row.get("date"))
             row["parsed_date"] = parsed
@@ -125,7 +130,9 @@ def _update_duplicate_and_digest_flags(cursor, table_name: str = EMAIL_TABLE, in
                 ]
                 if len(window) > 1:
                     latest = max(window, key=lambda item: item["parsed_date"])
-                    duplicate_ids.update(item["id"] for item in window if item["id"] != latest["id"])
+                    duplicate_ids.update(
+                        item["id"] for item in window if item["id"] != latest["id"]
+                    )
             if progress and task is not None:
                 progress.advance(task)
             elif duplicate_groups:
@@ -141,16 +148,21 @@ def _update_duplicate_and_digest_flags(cursor, table_name: str = EMAIL_TABLE, in
         started_at = time.time()
         last_update = started_at
         sender_groups = list(by_sender.values())
-        task = progress.add_task("Detecting digest senders", total=len(sender_groups)) if progress else None
+        task = (
+            progress.add_task("Detecting digest senders", total=len(sender_groups))
+            if progress
+            else None
+        )
         for index, group in enumerate(sender_groups, start=1):
             dated = [row for row in group if row.get("parsed_date")]
             dated.sort(key=lambda item: item["parsed_date"])
             if any(_looks_like_digest(row.get("subject")) for row in group):
-                digest_ids.update(row["id"] for row in group if _looks_like_digest(row.get("subject")))
+                digest_ids.update(
+                    row["id"] for row in group if _looks_like_digest(row.get("subject"))
+                )
             if len(dated) >= 3:
                 gaps = [
-                    (dated[i]["parsed_date"] - dated[i - 1]["parsed_date"]).total_seconds()
-                    / 86400
+                    (dated[i]["parsed_date"] - dated[i - 1]["parsed_date"]).total_seconds() / 86400
                     for i in range(1, len(dated))
                 ]
                 regular = any(
@@ -189,7 +201,9 @@ def _update_duplicate_and_digest_flags(cursor, table_name: str = EMAIL_TABLE, in
 
 
 def _propagate_thread_heuristics(conn, cursor, table_name: str, interactive: bool) -> int:
-    cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_thread_id ON {table_name}(thread_id)")
+    cursor.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{table_name}_thread_id ON {table_name}(thread_id)"
+    )
     conn.commit()
     cursor.execute(f"""
         SELECT thread_id, MIN(heuristic_category) AS heuristic_category
@@ -247,7 +261,9 @@ def _propagate_thread_heuristics(conn, cursor, table_name: str, interactive: boo
 
 def _ensure_heuristics_schema(conn, cursor, table_name: str) -> None:
     add_column_if_missing(cursor, table_name, "heuristic_processed_at", "TEXT")
-    cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_thread_id ON {table_name}(thread_id)")
+    cursor.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{table_name}_thread_id ON {table_name}(thread_id)"
+    )
     cursor.execute(
         f"CREATE INDEX IF NOT EXISTS idx_{table_name}_heuristic_processed_at ON {table_name}(heuristic_processed_at)"
     )
@@ -324,7 +340,11 @@ def run_heuristics(recompute: bool = False):
                             for a in soup.find_all("a", href=True):
                                 text = a.get_text().lower()
                                 href = str(a["href"]).lower()
-                                if "unsubscribe" in text or "unsubscribe" in href or "opt-out" in text:
+                                if (
+                                    "unsubscribe" in text
+                                    or "unsubscribe" in href
+                                    or "opt-out" in text
+                                ):
                                     unsub_links.append(str(a["href"]))
                             unsub_links = unsub_links[:5]
                         except Exception:
@@ -415,7 +435,9 @@ def run_heuristics(recompute: bool = False):
                         confidence = 0.8
                         heuristic_matches["body_unsubscribe_links"] = unsub_links
 
-                    heuristic_matches_json = json.dumps(heuristic_matches) if heuristic_matches else None
+                    heuristic_matches_json = (
+                        json.dumps(heuristic_matches) if heuristic_matches else None
+                    )
                     updates.append(
                         (
                             lang,

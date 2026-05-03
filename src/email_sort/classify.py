@@ -121,13 +121,17 @@ def _grid(rows: list[str], empty_message: str) -> Table:
 def create_active_panel():
     with display_lock:
         active = list(active_tasks.values())
-    return Panel(_grid(active, "No active workers yet"), title="Active Workers", border_style="blue")
+    return Panel(
+        _grid(active, "No active workers yet"), title="Active Workers", border_style="blue"
+    )
 
 
 def create_log_panel():
     with display_lock:
         rows = list(finished_tasks)
-    return Panel(_grid(rows, "Waiting for classification results"), title="Recent Log", border_style="green")
+    return Panel(
+        _grid(rows, "Waiting for classification results"), title="Recent Log", border_style="green"
+    )
 
 
 class ActiveDisplay:
@@ -367,7 +371,9 @@ def classify_emails(limit=None, source=None, window=100, reclassify=None):
 
     override_count = apply_sender_prefilters(source)
     reply_count = apply_has_user_reply_prefilter(source)
-    add_log(f"Applied prefilters: {override_count} sender overrides, {reply_count} user-reply senders")
+    add_log(
+        f"Applied prefilters: {override_count} sender overrides, {reply_count} user-reply senders"
+    )
 
     query = f"""
         SELECT id, sender, subject, snippet

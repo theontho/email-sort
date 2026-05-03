@@ -103,7 +103,12 @@ def _load_rows(cursor) -> list[dict]:
     cursor.execute(
         f"""
         SELECT sender, sender_domain, to_address, subject, date,
-               COALESCE(category, rule_category, heuristic_category) AS effective_category,
+               COALESCE(
+                   CASE WHEN rule_source = 'manual-correction' THEN rule_category END,
+                   category,
+                   rule_category,
+                   heuristic_category
+               ) AS effective_category,
                dmarc_fail
         FROM {EMAIL_TABLE}
         WHERE sender IS NOT NULL AND sender != ''

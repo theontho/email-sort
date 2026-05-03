@@ -463,7 +463,9 @@ def build_parser():
         description="Find and optionally execute safe unsubscribe actions for promotional senders.",
     )
     mode = unsub.add_mutually_exclusive_group()
-    mode.add_argument("--dry-run", action="store_true", help="Preview candidates without taking action")
+    mode.add_argument(
+        "--dry-run", action="store_true", help="Preview candidates without taking action"
+    )
     mode.add_argument("--execute", action="store_true", help="Attempt unsubscribe actions")
     unsub.add_argument("--yes", action="store_true", help="Skip interactive confirmation prompts")
     unsub.set_defaults(func=command_unsubscribe)
