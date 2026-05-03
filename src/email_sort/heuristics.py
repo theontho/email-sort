@@ -3,6 +3,9 @@ import fasttext  # type: ignore
 import os
 import urllib.request
 import json
+import re
+from collections import defaultdict
+import email.utils
 from bs4 import BeautifulSoup
 from email_sort.config import get_setting, get_config_dir
 
@@ -18,6 +21,94 @@ def download_model():
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
 
 
+def _parse_date(value):
+    if not value:
+        return None
+    try:
+        from datetime import datetime
+
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        try:
+            return email.utils.parsedate_to_datetime(str(value))
+        except Exception:
+            return None
+
+
+def _subject_key(subject):
+    return re.sub(r"\s+", " ", (subject or "").strip().lower())
+
+
+def _looks_like_digest(subject):
+    subject = subject or ""
+    patterns = [
+        r"\bdaily digest\b",
+        r"\bweekly (summary|digest|roundup)\b",
+        r"\bmonthly (summary|digest|roundup)\b",
+        r"\bnewsletter\s*#?\d+\b",
+        r"\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b",
+        r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}\b",
+    ]
+    return any(re.search(pattern, subject, re.I) for pattern in patterns)
+
+
+def _update_duplicate_and_digest_flags(cursor, table_name):
+    cursor.execute(f"SELECT id, sender, subject, date FROM {table_name}")
+    rows = [dict(row) for row in cursor.fetchall()]
+    duplicate_ids: set[int] = set()
+    by_sender_subject = defaultdict(list)
+    by_sender = defaultdict(list)
+
+    for row in rows:
+        parsed = _parse_date(row.get("date"))
+        row["parsed_date"] = parsed
+        sender = (row.get("sender") or "").lower()
+        if sender:
+            by_sender[sender].append(row)
+        if sender and parsed:
+            by_sender_subject[(sender, _subject_key(row.get("subject")))].append(row)
+
+    for group in by_sender_subject.values():
+        group.sort(key=lambda item: item["parsed_date"])
+        for idx, row in enumerate(group):
+            window = [other for other in group if abs((other["parsed_date"] - row["parsed_date"]).total_seconds()) <= 86400]
+            if len(window) > 1:
+                latest = max(window, key=lambda item: item["parsed_date"])
+                duplicate_ids.update(item["id"] for item in window if item["id"] != latest["id"])
+
+    digest_ids: set[int] = set()
+    for group in by_sender.values():
+        dated = [row for row in group if row.get("parsed_date")]
+        dated.sort(key=lambda item: item["parsed_date"])
+        if any(_looks_like_digest(row.get("subject")) for row in group):
+            digest_ids.update(row["id"] for row in group if _looks_like_digest(row.get("subject")))
+        if len(dated) >= 3:
+            gaps = [
+                (dated[i]["parsed_date"] - dated[i - 1]["parsed_date"]).total_seconds() / 86400
+                for i in range(1, len(dated))
+            ]
+            regular = any(
+                sum(1 for gap in gaps if abs(gap - cadence) <= tolerance) >= 2
+                for cadence, tolerance in ((1, 0.35), (7, 1.0), (30, 3.0))
+            )
+            if regular:
+                digest_ids.update(
+                    row["id"] for row in group if _looks_like_digest(row.get("subject"))
+                )
+
+    cursor.execute(f"UPDATE {table_name} SET is_duplicate = 0, is_digest = 0")
+    if duplicate_ids:
+        cursor.executemany(
+            f"UPDATE {table_name} SET is_duplicate = 1 WHERE id = ?",
+            [(email_id,) for email_id in duplicate_ids],
+        )
+    if digest_ids:
+        cursor.executemany(
+            f"UPDATE {table_name} SET is_digest = 1 WHERE id = ?",
+            [(email_id,) for email_id in digest_ids],
+        )
+
+
 def run_heuristics():
     download_model()
     # Suppress warning
@@ -28,7 +119,9 @@ def run_heuristics():
     c = conn.cursor()
 
     for table_name in ["fastmail", "google_emails"]:
-        c.execute(f"SELECT id, subject, snippet, to_address, headers, body_html FROM {table_name}")
+        c.execute(
+            f"SELECT id, subject, snippet, to_address, headers, body_html, dmarc_fail, has_arc, arc_auth_results FROM {table_name}"
+        )
         rows = c.fetchall()
 
         if not rows:
@@ -46,6 +139,10 @@ def run_heuristics():
             to_address = row["to_address"] or ""
             headers_raw = row["headers"]
             body_html = row["body_html"] or ""
+            arc_auth_results = (row["arc_auth_results"] or "").lower()
+            dmarc_arc_override = int(
+                bool(row["dmarc_fail"]) and bool(row["has_arc"]) and "dmarc=pass" in arc_auth_results
+            )
             headers = {}
             if headers_raw:
                 try:
@@ -170,13 +267,14 @@ def run_heuristics():
                     confidence,
                     unsub_links_json,
                     heuristic_matches_json,
+                    dmarc_arc_override,
                     email_id,
                 )
             )
 
             if len(updates) >= 1000:
                 c.executemany(
-                    f"UPDATE {table_name} SET language=?, is_not_for_me=?, category=COALESCE(category, ?), action=COALESCE(action, ?), confidence=COALESCE(confidence, ?), body_unsubscribe_links=?, heuristic_matches=? WHERE id=?",
+                    f"UPDATE {table_name} SET language=?, is_not_for_me=?, category=COALESCE(category, ?), action=COALESCE(action, ?), confidence=COALESCE(confidence, ?), body_unsubscribe_links=?, heuristic_matches=?, dmarc_arc_override=? WHERE id=?",
                     updates,
                 )
                 conn.commit()
@@ -184,10 +282,14 @@ def run_heuristics():
 
         if updates:
             c.executemany(
-                f"UPDATE {table_name} SET language=?, is_not_for_me=?, category=COALESCE(category, ?), action=COALESCE(action, ?), confidence=COALESCE(confidence, ?), body_unsubscribe_links=?, heuristic_matches=? WHERE id=?",
+                f"UPDATE {table_name} SET language=?, is_not_for_me=?, category=COALESCE(category, ?), action=COALESCE(action, ?), confidence=COALESCE(confidence, ?), body_unsubscribe_links=?, heuristic_matches=?, dmarc_arc_override=? WHERE id=?",
                 updates,
             )
             conn.commit()
+
+        print(f"Detecting duplicates and digests in {table_name}...")
+        _update_duplicate_and_digest_flags(c, table_name)
+        conn.commit()
 
         # Thread-aware classification propagation
         print(f"Propagating thread classifications in {table_name}...")
@@ -209,8 +311,6 @@ def run_heuristics():
             )
         """)
         conn.commit()
-
-    print("Heuristics complete.")
 
     print("Heuristics complete.")
 

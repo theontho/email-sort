@@ -1,0 +1,1 @@
+-- Applied by Python migration because SQLite lacks portable ADD COLUMN IF NOT EXISTS.

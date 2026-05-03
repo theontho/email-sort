@@ -9,21 +9,13 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from email_sort.db import get_db
 from email_sort.config import get_setting, get_servers, get_config_dir
+from email_sort.corrections import apply_sender_prefilters
+from email_sort.sender_analysis import apply_has_user_reply_prefilter
+from email_sort.progress import make_progress
 
-from rich.progress import (
-    Progress,
-    SpinnerColumn,
-    BarColumn,
-    TextColumn,
-    TimeElapsedColumn,
-    TimeRemainingColumn,
-    MofNCompleteColumn,
-    ProgressColumn,
-)
 from rich.live import Live
 from rich.table import Table
 from rich.console import Console
-from rich.text import Text
 from rich.layout import Layout
 
 load_dotenv()
@@ -273,16 +265,6 @@ def classify_single_email(worker_pool, row, pbar, pbar_task, table_name="fastmai
         worker_pool.put(client_info)
 
 
-class SpeedColumn(ProgressColumn):
-    """Renders the processing speed."""
-
-    def render(self, task):
-        speed = task.speed
-        if speed is None:
-            return Text("0.00 emails/s", style="bold blue")
-        return Text(f"{speed:.2f} emails/s", style="bold blue")
-
-
 def classify_emails(limit=None, table_name="fastmail", window=100, reclassify=None):
     global finished_tasks
     finished_tasks = collections.deque(maxlen=window)
@@ -317,13 +299,20 @@ def classify_emails(limit=None, table_name="fastmail", window=100, reclassify=No
             )
             conn.commit()
 
+        override_count = apply_sender_prefilters(t)
+        reply_count = apply_has_user_reply_prefilter(t)
+        if override_count or reply_count:
+            print(
+                f"Applied prefilters in {t}: {override_count} sender overrides, {reply_count} user-reply senders"
+            )
+
         query = f"""
             SELECT id, sender, subject, snippet 
             FROM {t} 
             WHERE (category IS NULL OR category = '') 
             AND language = 'en' 
             AND is_not_for_me = 0
-            AND dmarc_fail = 0
+            AND (dmarc_fail = 0 OR dmarc_arc_override = 1)
         """
         if table_limit:
             query += f" LIMIT {table_limit}"
@@ -358,17 +347,7 @@ def classify_emails(limit=None, table_name="fastmail", window=100, reclassify=No
     layout = Layout()
     layout.split_column(Layout(name="status"), Layout(name="progress", size=3))
 
-    progress = Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(bar_width=None),
-        MofNCompleteColumn(),
-        SpeedColumn(),
-        TimeElapsedColumn(),
-        TimeRemainingColumn(),
-        console=console,
-        expand=True,
-    )
+    progress = make_progress(spinner=True, bar_width=None, console=console, expand=True)
     pbar_task = progress.add_task("Classifying Emails...", total=len(all_rows))
     layout["progress"].update(progress)
     layout["status"].update(StatusDisplay())

@@ -2,12 +2,23 @@ import requests
 import json
 import sys
 import time
-from tqdm import tqdm
-from email_sort.db import get_db
+import re
+from email_sort.db import get_db, init_db
 from email_sort.config import get_setting
+from email_sort.progress import make_progress
+
+
+def _first_header(headers_list, name):
+    lower_name = name.lower()
+    return next((h.get("value", "") for h in headers_list if h.get("name", "").lower() == lower_name), "")
+
+
+def _auth_flag(auth_results: str, name: str, result: str) -> bool:
+    return bool(re.search(rf"\b{re.escape(name)}\s*=\s*{re.escape(result)}\b", auth_results, re.I))
 
 
 def ingest_fastmail():
+    init_db()
     token = get_setting("fastmail_token")
     if not token:
         print("Please set FASTMAIL_TOKEN environment variable.")
@@ -40,7 +51,9 @@ def ingest_fastmail():
 
     is_interactive = sys.stdout.isatty()
     if is_interactive:
-        pbar = tqdm(total=len(email_ids), desc="Ingesting Fastmail")
+        progress = make_progress()
+        progress.start()
+        progress_task = progress.add_task("Ingesting Fastmail", total=len(email_ids))
     else:
         start_time = time.time()
         last_update = start_time
@@ -146,20 +159,16 @@ def ingest_fastmail():
 
             # Extract headers from the list
             headers_list = email_data.get("headers", [])
-            list_unsubscribe = next(
-                (h["value"] for h in headers_list if h["name"].lower() == "list-unsubscribe"),
-                "",
-            )
-            list_unsubscribe_post = next(
-                (h["value"] for h in headers_list if h["name"].lower() == "list-unsubscribe-post"),
-                "",
-            )
-            auth_results = next(
-                (h["value"] for h in headers_list if h["name"].lower() == "authentication-results"),
-                "",
-            ).lower()
-            dmarc_fail = "dmarc=fail" in auth_results
-            spf_fail = "spf=fail" in auth_results
+            list_unsubscribe = _first_header(headers_list, "list-unsubscribe")
+            list_unsubscribe_post = _first_header(headers_list, "list-unsubscribe-post")
+            auth_results = _first_header(headers_list, "authentication-results")
+            arc_auth_results = _first_header(headers_list, "arc-authentication-results")
+            arc_seal = _first_header(headers_list, "arc-seal")
+            dmarc_fail = _auth_flag(auth_results, "dmarc", "fail")
+            spf_fail = _auth_flag(auth_results, "spf", "fail")
+            dkim_pass = _auth_flag(auth_results, "dkim", "pass")
+            has_arc = bool(arc_seal)
+            dmarc_arc_override = has_arc and _auth_flag(arc_auth_results, "dmarc", "pass")
 
             cc = json.dumps(email_data.get("cc")) if email_data.get("cc") else None
             bcc = json.dumps(email_data.get("bcc")) if email_data.get("bcc") else None
@@ -187,9 +196,14 @@ def ingest_fastmail():
                 c.execute(
                     """
                     INSERT INTO fastmail 
-                    (source, message_id, sender, sender_domain, to_address, subject, date, snippet, body_text, body_html, list_unsubscribe, list_unsubscribe_post, dmarc_fail, spf_fail, cc, bcc, reply_to, keywords, mailbox_ids, has_attachment, headers)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (source, message_id, sender, sender_domain, to_address, subject, date, snippet, body_text, body_html, list_unsubscribe, list_unsubscribe_post, dmarc_fail, spf_fail, cc, bcc, reply_to, keywords, mailbox_ids, has_attachment, headers, arc_auth_results, has_arc, dkim_pass, dmarc_arc_override)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(message_id) DO UPDATE SET 
+                        sender=excluded.sender,
+                        sender_domain=excluded.sender_domain,
+                        to_address=excluded.to_address,
+                        subject=excluded.subject,
+                        date=excluded.date,
                         snippet=excluded.snippet,
                         body_text=excluded.body_text,
                         body_html=excluded.body_html,
@@ -203,7 +217,11 @@ def ingest_fastmail():
                         keywords=excluded.keywords,
                         mailbox_ids=excluded.mailbox_ids,
                         has_attachment=excluded.has_attachment,
-                        headers=excluded.headers
+                        headers=excluded.headers,
+                        arc_auth_results=excluded.arc_auth_results,
+                        has_arc=excluded.has_arc,
+                        dkim_pass=excluded.dkim_pass,
+                        dmarc_arc_override=excluded.dmarc_arc_override
                 """,
                     (
                         source,
@@ -227,20 +245,24 @@ def ingest_fastmail():
                         mailbox_ids,
                         has_attachment,
                         headers_json,
+                        arc_auth_results,
+                        int(has_arc),
+                        int(dkim_pass),
+                        int(dmarc_arc_override),
                     ),
                 )
             except Exception as e:
                 print(f"Error inserting/updating {message_id}: {e}")
 
             if is_interactive:
-                pbar.update(1)
+                progress.advance(progress_task)
             else:
                 processed += 1
 
         conn.commit()
 
     if is_interactive:
-        pbar.close()
+        progress.stop()
 
     conn.close()
     print("Fastmail ingestion complete.")

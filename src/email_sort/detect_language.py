@@ -2,10 +2,10 @@ import os
 import logging
 import argparse
 import fasttext  # type: ignore
-from tqdm import tqdm
 from email_sort.db import get_db
 from email_sort.heuristics import download_model, MODEL_PATH
 from email_sort.config import get_config_dir
+from email_sort.progress import make_progress
 
 # Setup logging
 log_path = get_config_dir() / "language_detection.log"
@@ -47,7 +47,9 @@ def detect_languages(table_name="fastmail", batch_size=1000):
     # and to commit periodically
 
     processed = 0
-    with tqdm(total=total, desc=f"Detecting {table_name}") as pbar:
+    progress = make_progress()
+    with progress:
+        task = progress.add_task(f"Detecting {table_name}", total=total)
         while True:
             cursor.execute(f"""
                 SELECT id, subject, snippet 
@@ -89,7 +91,7 @@ def detect_languages(table_name="fastmail", batch_size=1000):
             conn.commit()
 
             processed += len(rows)
-            pbar.update(len(rows))
+            progress.advance(task, len(rows))
 
     conn.close()
     logger.info(f"Finished processing {processed} emails in {table_name}.")

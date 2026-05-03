@@ -4,6 +4,9 @@ from pathlib import Path
 from email_sort.config import get_config_dir, get_setting
 
 
+EMAIL_TABLES = ("fastmail", "google_emails")
+
+
 def _get_db_path() -> Path:
     """
     Determines the path to the SQLite database.
@@ -33,6 +36,25 @@ def get_db():
     conn = sqlite3.connect(str(DB_PATH), timeout=30)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def table_exists(c: sqlite3.Cursor, table_name: str) -> bool:
+    c.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,))
+    return c.fetchone() is not None
+
+
+def column_exists(c: sqlite3.Cursor, table_name: str, column_name: str) -> bool:
+    if not table_exists(c, table_name):
+        return False
+    c.execute(f"PRAGMA table_info({table_name})")
+    return any(row[1] == column_name for row in c.fetchall())
+
+
+def add_column_if_missing(
+    c: sqlite3.Cursor, table_name: str, column_name: str, column_type: str
+) -> None:
+    if not column_exists(c, table_name, column_name):
+        c.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
 
 
 def create_email_table(c, table_name):
@@ -90,20 +112,19 @@ def create_email_table(c, table_name):
         ("delivered_to", "TEXT"),
     ]
     for col_name, col_type in columns:
-        try:
-            c.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}")
-        except sqlite3.OperationalError:
-            # Column already exists
-            pass
+        add_column_if_missing(c, table_name, col_name, col_type)
 
 
 def init_db():
     conn = get_db()
     c = conn.cursor()
-    create_email_table(c, "fastmail")
-    create_email_table(c, "google_emails")
+    for table_name in EMAIL_TABLES:
+        create_email_table(c, table_name)
     conn.commit()
     conn.close()
+    from email_sort.migrate import migrate
+
+    migrate(verbose=False)
 
 
 if __name__ == "__main__":
