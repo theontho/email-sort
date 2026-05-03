@@ -4,7 +4,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 APP_NAME = "email-sort"
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -96,9 +96,9 @@ class AppConfig(BaseModel):
         try:
             with path.open("rb") as file:
                 data = tomllib.load(file)
-        except (OSError, tomllib.TOMLDecodeError) as exc:
+            return cls.model_validate(data)
+        except (OSError, tomllib.TOMLDecodeError, ValidationError) as exc:
             raise ConfigLoadError(f"Could not load config at {path}: {exc}") from exc
-        return cls.model_validate(data)
 
 
 def get_default_config_dir() -> Path:
@@ -117,15 +117,16 @@ def _get_config_path() -> Path:
     return (get_default_config_dir() / "conf.toml").resolve()
 
 
-CONF_PATH = _get_config_path()
-CONFIG_DIR = CONF_PATH.parent
 _config: AppConfig | None = None
+_config_path: Path | None = None
 
 
 def load_config(reload: bool = False) -> AppConfig:
-    global _config
-    if _config is None or reload:
+    global _config, _config_path
+    path = get_config_path()
+    if _config is None or reload or path != _config_path:
         _config = AppConfig.load()
+        _config_path = path
     return _config
 
 
@@ -134,7 +135,13 @@ def get_config(reload: bool = False) -> AppConfig:
 
 
 def get_setting(key: str, default: Any = None) -> Any:
-    return getattr(get_config().general, key, default)
+    config = get_config().general
+    if key in config.model_fields_set:
+        return getattr(config, key)
+    env_value = os.environ.get(key.upper())
+    if env_value is not None:
+        return env_value
+    return getattr(config, key, default)
 
 
 def get_section(section: str) -> dict[str, Any]:
@@ -144,6 +151,11 @@ def get_section(section: str) -> dict[str, Any]:
 
 def get_section_setting(section: str, key: str, default: Any = None) -> Any:
     value = getattr(get_config(), section)
+    if key in value.model_fields_set:
+        return getattr(value, key)
+    env_value = os.environ.get(f"{section}_{key}".upper())
+    if env_value is not None:
+        return env_value
     return getattr(value, key, default)
 
 
@@ -152,9 +164,10 @@ def get_servers() -> list[dict[str, Any]]:
 
 
 def get_config_dir() -> Path:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    return CONFIG_DIR
+    config_dir = get_config_path().parent
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir
 
 
 def get_config_path() -> Path:
-    return CONF_PATH
+    return _get_config_path()

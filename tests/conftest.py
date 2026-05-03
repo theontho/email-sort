@@ -7,6 +7,11 @@ import pytest
 def isolated_config(monkeypatch, tmp_path):
     monkeypatch.setenv("EMAIL_SORT_CONFIG", str(tmp_path / "conf.toml"))
     monkeypatch.setenv("EMAIL_SORT_DB", str(tmp_path / "emails.db"))
+    from email_sort import config
+
+    config.load_config(reload=True)
+    yield
+    config.load_config(reload=True)
 
 
 @pytest.fixture

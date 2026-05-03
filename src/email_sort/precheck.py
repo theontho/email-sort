@@ -10,9 +10,9 @@ from email_sort.heuristics import MODEL_PATH
 
 
 def _writable_dir(path: Path) -> bool:
-    path.mkdir(parents=True, exist_ok=True)
-    test_path = path / ".email-sort-write-test"
     try:
+        path.mkdir(parents=True, exist_ok=True)
+        test_path = path / ".email-sort-write-test"
         test_path.write_text("ok")
         test_path.unlink(missing_ok=True)
         return True
@@ -65,7 +65,15 @@ def run_precheck(check_servers: bool = False) -> tuple[bool, list[str]]:
         if check_servers:
             try:
                 response = requests.get(f"{server.url.rstrip('/')}/models", timeout=10)
-                results.append(f"LLM server reachable: {server.name} HTTP {response.status_code}")
+                if response.ok:
+                    results.append(
+                        f"LLM server reachable: {server.name} HTTP {response.status_code}"
+                    )
+                else:
+                    ok = False
+                    results.append(
+                        f"LLM server unhealthy: {server.name} HTTP {response.status_code}"
+                    )
             except requests.RequestException as exc:
                 ok = False
                 results.append(f"LLM server unreachable: {server.name}: {exc}")

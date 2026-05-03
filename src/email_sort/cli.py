@@ -10,7 +10,7 @@ from rich.table import Table
 
 from email_sort import __version__
 from email_sort.config import get_config, get_config_dir, get_config_path
-from email_sort.db import DB_PATH, EMAIL_TABLE, get_db
+from email_sort.db import EMAIL_TABLE, _get_db_path, get_db
 from email_sort.log import setup_logging
 
 console = Console()
@@ -47,7 +47,7 @@ def command_init_db(args):
     from email_sort.db import init_db
 
     init_db()
-    console.print(f"Database initialized at [cyan]{DB_PATH}[/cyan]")
+    console.print(f"Database initialized at [cyan]{_get_db_path()}[/cyan]")
 
 
 def command_migrate(args):
@@ -260,7 +260,7 @@ def command_config(args):
     table.add_column("Value")
     table.add_row("Config File", str(get_config_path()))
     table.add_row("Config Dir", str(get_config_dir()))
-    table.add_row("Database", str(DB_PATH))
+    table.add_row("Database", str(_get_db_path()))
     table.add_row("Classification Log", str(get_config_dir() / "classification.log"))
     table.add_row("Log Level", config.general.log_level)
     table.add_row("Servers", ", ".join(server.name for server in config.servers) or "<none>")

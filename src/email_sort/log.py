@@ -1,4 +1,5 @@
 import logging
+import sys
 
 from rich.logging import RichHandler
 
@@ -8,14 +9,17 @@ def setup_logging(level: str = "INFO", log_file: str | None = None) -> None:
         RichHandler(rich_tracebacks=True, show_path=False, show_time=False)
     ]
     if log_file:
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s %(levelname)s [%(name)s] %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
+        try:
+            file_handler = logging.FileHandler(log_file)
+            file_handler.setFormatter(
+                logging.Formatter(
+                    "%(asctime)s %(levelname)s [%(name)s] %(message)s",
+                    datefmt="%Y-%m-%d %H:%M:%S",
+                )
             )
-        )
-        handlers.append(file_handler)
+            handlers.append(file_handler)
+        except OSError as exc:
+            print(f"Warning: could not open log file {log_file}: {exc}", file=sys.stderr)
     logging.basicConfig(
         level=level.upper(),
         format="%(message)s",
