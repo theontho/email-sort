@@ -473,7 +473,9 @@ def classify_emails(limit=None, source=None, window=100, reclassify=None):
             result_queue.put(None)
             writer.join()
         elapsed = _format_duration(time.time() - started_at)
-        message = f"classification complete (classified {writer_stats['classified']} emails in {elapsed})"
+        message = (
+            f"classification complete (classified {writer_stats['classified']} emails in {elapsed})"
+        )
         add_log(message)
         print(message, flush=True)
     except KeyboardInterrupt:

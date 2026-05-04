@@ -937,7 +937,11 @@ def test_heuristics_match_personal_alias_domains(monkeypatch):
     monkeypatch.setattr(heuristics, "download_model", lambda: None)
     monkeypatch.setattr(heuristics.fasttext, "load_model", lambda path: FakeModel())
     monkeypatch.setattr(heuristics.sys.stdout, "isatty", lambda: False)
-    monkeypatch.setattr(heuristics, "get_setting", lambda key, default=None: ["hmmfn.com"] if key == "my_domains" else default)
+    monkeypatch.setattr(
+        heuristics,
+        "get_setting",
+        lambda key, default=None: ["hmmfn.com"] if key == "my_domains" else default,
+    )
 
     heuristics.run_heuristics()
 
@@ -947,6 +951,66 @@ def test_heuristics_match_personal_alias_domains(monkeypatch):
         cursor.execute(
             f"SELECT is_not_for_me FROM {EMAIL_TABLE} WHERE provider_id = ?",
             ("alias",),
+        )
+        assert cursor.fetchone()["is_not_for_me"] == 0
+    finally:
+        conn.close()
+
+
+def test_heuristics_use_default_my_domains_when_config_empty(monkeypatch):
+    from email_sort import heuristics
+
+    class FakeModel:
+        def predict(self, text):
+            return (["__label__en"], [0.99])
+
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        create_email_table(cursor)
+        cursor.execute(
+            f"""
+            INSERT INTO {EMAIL_TABLE} (
+                source, provider_id, sender, sender_domain, subject, snippet,
+                to_address, delivered_to, headers, body_html, dmarc_fail,
+                has_arc, arc_auth_results
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "test",
+                "default-domain",
+                "alerts@example.com",
+                "example.com",
+                "Hello",
+                "Body",
+                "Me <person@gmail.com>",
+                "",
+                "{}",
+                "",
+                0,
+                0,
+                "",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(heuristics, "download_model", lambda: None)
+    monkeypatch.setattr(heuristics.fasttext, "load_model", lambda path: FakeModel())
+    monkeypatch.setattr(heuristics.sys.stdout, "isatty", lambda: False)
+    monkeypatch.setattr(
+        heuristics, "get_setting", lambda key, default=None: [] if key == "my_domains" else default
+    )
+
+    heuristics.run_heuristics()
+
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT is_not_for_me FROM {EMAIL_TABLE} WHERE provider_id = ?",
+            ("default-domain",),
         )
         assert cursor.fetchone()["is_not_for_me"] == 0
     finally:
@@ -1024,7 +1088,11 @@ def test_heuristics_classify_obvious_notifications(monkeypatch):
     monkeypatch.setattr(heuristics, "download_model", lambda: None)
     monkeypatch.setattr(heuristics.fasttext, "load_model", lambda path: FakeModel())
     monkeypatch.setattr(heuristics.sys.stdout, "isatty", lambda: False)
-    monkeypatch.setattr(heuristics, "get_setting", lambda key, default=None: ["example.com"] if key == "my_domains" else default)
+    monkeypatch.setattr(
+        heuristics,
+        "get_setting",
+        lambda key, default=None: ["example.com"] if key == "my_domains" else default,
+    )
 
     heuristics.run_heuristics()
 
@@ -1096,7 +1164,11 @@ def test_heuristics_recompute_replaces_existing_heuristic_category(monkeypatch):
     monkeypatch.setattr(heuristics, "download_model", lambda: None)
     monkeypatch.setattr(heuristics.fasttext, "load_model", lambda path: FakeModel())
     monkeypatch.setattr(heuristics.sys.stdout, "isatty", lambda: False)
-    monkeypatch.setattr(heuristics, "get_setting", lambda key, default=None: ["example.com"] if key == "my_domains" else default)
+    monkeypatch.setattr(
+        heuristics,
+        "get_setting",
+        lambda key, default=None: ["example.com"] if key == "my_domains" else default,
+    )
 
     heuristics.run_heuristics(recompute=True)
 

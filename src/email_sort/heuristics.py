@@ -19,6 +19,7 @@ from email_sort.progress import make_progress
 MODEL_URL = "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin"
 # Path relative to centralized config directory
 MODEL_PATH = get_config_dir() / "models" / "lid.176.bin"
+DEFAULT_MY_DOMAINS = ["icloud.com", "appleid.com", "gmail.com"]
 
 
 def _normalize_domains(values) -> tuple[set[str], set[str]]:
@@ -40,8 +41,9 @@ def _domain_matches(domain: str, targets: set[str]) -> bool:
     return any(domain == target or domain.endswith(f".{target}") for target in targets)
 
 
-def _addresses_match_domains(values: list[str], my_domains) -> bool:
-    target_addresses, target_domains = _normalize_domains(my_domains)
+def _addresses_match_domains(
+    values: list[str], target_addresses: set[str], target_domains: set[str]
+) -> bool:
     for _, address in email.utils.getaddresses(values):
         address = address.lower()
         if not address or "@" not in address:
@@ -233,7 +235,14 @@ def _deterministic_notification_classification(
             r"\b(friend request|tagged you|mentioned you|commented on|liked your|sent you a message)\b",
             r"\b(new follower|connection request|invited you|event invitation)\b",
         ),
-        domains=("facebookmail.com", "linkedin.com", "twitter.com", "x.com", "instagram.com", "meetup.com"),
+        domains=(
+            "facebookmail.com",
+            "linkedin.com",
+            "twitter.com",
+            "x.com",
+            "instagram.com",
+            "meetup.com",
+        ),
         senders=("confirm+", "eventmaster", "wallmaster"),
         sender_identity_enough=True,
     )
@@ -557,7 +566,8 @@ def run_heuristics(recompute: bool = False):
             )
 
             updates = []
-            my_domains = get_setting("my_domains", ["icloud.com", "appleid.com", "gmail.com"])
+            my_domains = get_setting("my_domains") or DEFAULT_MY_DOMAINS
+            my_addresses, my_domain_names = _normalize_domains(my_domains)
             progress = make_progress() if rows and is_interactive else None
             if progress:
                 progress.start()
@@ -620,7 +630,9 @@ def run_heuristics(recompute: bool = False):
                             pass
 
                     is_not_for_me = 0
-                    if not _addresses_match_domains([to_address, delivered_to], my_domains):
+                    if not _addresses_match_domains(
+                        [to_address, delivered_to], my_addresses, my_domain_names
+                    ):
                         is_not_for_me = 1
 
                     category = None
