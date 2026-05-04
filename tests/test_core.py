@@ -1,5 +1,6 @@
 import argparse
 import email
+import queue
 from email import policy
 from pathlib import Path
 
@@ -134,23 +135,142 @@ def test_rule_fields_do_not_fill_llm_or_heuristic_fields(sqlite_conn):
 def test_parse_classification_extracts_last_valid_csv_line():
     content = """
     I should classify this as a password email.
-    Security, 0.97, Password Reset, Authentication
+    Security, 0.97, Password Reset, Reset link for your account password, Authentication
     """
     assert parse_classification(content) == (
         "Security",
         0.97,
         "Password Reset",
+        "Reset link for your account password",
         "Authentication",
     )
 
 
 def test_parse_classification_normalizes_case():
-    assert parse_classification("spam, 0.95, phishing, promotional") == (
+    assert parse_classification("spam, 0.95, phishing, Likely phishing scam, promotional") == (
         "Spam",
         0.95,
         "phishing",
+        "Likely phishing scam",
         "Promotional",
     )
+
+
+def test_classify_single_email_logs_all_llm_output_fields(monkeypatch):
+    from email_sort import classify
+
+    classify.stop_event.clear()
+    statuses = []
+    prompts = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            prompts.append(kwargs["messages"][1]["content"])
+            return argparse.Namespace(
+                choices=[
+                    argparse.Namespace(
+                        message=argparse.Namespace(
+                            content="Security, 0.97, Password Reset, Reset link for your account password, Authentication"
+                        )
+                    )
+                ]
+            )
+
+    class FakeClient:
+        def __init__(self):
+            self.chat = argparse.Namespace(completions=FakeCompletions())
+
+    monkeypatch.setattr(
+        classify,
+        "update_status",
+        lambda email_id, msg, is_finished=False: statuses.append((email_id, msg, is_finished)),
+    )
+
+    worker_pool = queue.Queue()
+    worker_pool.put((FakeClient(), "model", "http://server", "server"))
+    result_queue = queue.Queue()
+
+    classify.classify_single_email(
+        worker_pool,
+        result_queue,
+        {
+            "id": 42,
+            "sender": "sender@example.com",
+            "date": "2026-05-03T18:54:19",
+            "subject": "Password reset",
+            "snippet": "snippet text should not be preferred",
+            "body_text": "Use this link to reset your password.",
+        },
+    )
+
+    assert "Body:\nUse this link to reset your password." in prompts[-1]
+    assert "snippet text should not be preferred" not in prompts[-1]
+
+    logged = statuses[-1][1]
+    assert statuses[-1] == (42, logged, True)
+    assert "Security" in logged
+    assert "2026-05-03T18:54:19" in logged
+    assert "0.97" in logged
+    assert "Password Reset" in logged
+    assert "Reset link for your account password" in logged
+    assert "Authentication" in logged
+    assert logged.rfind("Authentication") < logged.rfind("Reset link for your account password")
+
+    result = result_queue.get_nowait()
+    assert result[:5] == (
+        "Security",
+        0.97,
+        "Password Reset",
+        "Reset link for your account password",
+        "Authentication",
+    )
+    assert result[5] == "model@server"
+    assert result[7] == 42
+
+
+def test_classify_single_email_falls_back_to_snippet(monkeypatch):
+    from email_sort import classify
+
+    classify.stop_event.clear()
+    prompts = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            prompts.append(kwargs["messages"][1]["content"])
+            return argparse.Namespace(
+                choices=[
+                    argparse.Namespace(
+                        message=argparse.Namespace(
+                            content="Other, 0.5, Fallback, Snippet fallback used, Informational"
+                        )
+                    )
+                ]
+            )
+
+    class FakeClient:
+        def __init__(self):
+            self.chat = argparse.Namespace(completions=FakeCompletions())
+
+    monkeypatch.setattr(classify, "update_status", lambda *args, **kwargs: None)
+
+    worker_pool = queue.Queue()
+    worker_pool.put((FakeClient(), "model", "http://server", "server"))
+    result_queue = queue.Queue()
+
+    classify.classify_single_email(
+        worker_pool,
+        result_queue,
+        {
+            "id": 43,
+            "sender": "sender@example.com",
+            "date": "2026-05-03T18:54:19",
+            "subject": "Fallback",
+            "snippet": "Use the snippet when body is empty.",
+            "body_text": "",
+        },
+    )
+
+    assert "Body:\nUse the snippet when body is empty." in prompts[-1]
 
 
 def test_classification_status_and_log_panels_are_separate():
@@ -254,8 +374,12 @@ def test_classification_writer_advances_progress_per_result(monkeypatch):
             self.advanced += advance
 
     result_queue = __import__("queue").Queue()
-    result_queue.put(("Finance", 0.9, "Receipt", "Informational", "model", 1.0, 1))
-    result_queue.put(("Security", 0.8, "Login", "Authentication", "model", 1.0, 2))
+    result_queue.put(
+        ("Finance", 0.9, "Receipt", "Receipt for recent purchase", "Informational", "model", 1.0, 1)
+    )
+    result_queue.put(
+        ("Security", 0.8, "Login", "New login notification", "Authentication", "model", 1.0, 2)
+    )
     result_queue.put(None)
     progress = FakeProgress()
     written_batches = []
@@ -552,6 +676,84 @@ def test_cli_subcommands_have_visible_help():
                 check_parser(subparser)
 
     check_parser(build_parser())
+
+
+def test_benchmark_classification_parser_options():
+    args = build_parser().parse_args(
+        [
+            "benchmark-classification",
+            "m5",
+            "--caps",
+            "500,1000,4000",
+            "--samples",
+            "2",
+            "--models",
+            "model-a,model-b",
+            "--source",
+            "gmail",
+            "--output-dir",
+            "bench-out",
+            "--timeout",
+            "12.5",
+            "--max-tokens",
+            "128",
+            "--backend",
+            "opencode",
+            "--opencode-agent",
+            "summary",
+            "--opencode-provider",
+            "github-copilot",
+            "--no-progress",
+            "--redact-inputs",
+        ]
+    )
+
+    assert args.server == "m5"
+    assert args.backend == "opencode"
+    assert args.caps == [500, 1000, 4000]
+    assert args.samples == 2
+    assert args.models == ["model-a", "model-b"]
+    assert args.source == "gmail"
+    assert args.output_dir == "bench-out"
+    assert args.timeout == 12.5
+    assert args.max_tokens == 128
+    assert args.opencode_agent == "summary"
+    assert args.opencode_provider == "github-copilot"
+    assert args.no_progress is True
+    assert args.redact_inputs is True
+
+
+def test_benchmark_classification_opencode_defaults_without_server():
+    args = build_parser().parse_args(["benchmark-classification", "--backend", "opencode"])
+
+    assert args.server is None
+    assert args.backend == "opencode"
+    assert args.models is None
+    assert args.opencode_agent == "summary"
+
+
+def test_benchmark_models_parser_options():
+    args = build_parser().parse_args(["benchmark-models", "--backend", "opencode"])
+
+    assert args.server is None
+    assert args.backend == "opencode"
+
+
+def test_benchmark_classification_missing_server_error(monkeypatch, capsys):
+    from email_sort import cli
+
+    def fail_benchmark(**kwargs):
+        raise ValueError("No enabled server named 'm4' found. Available servers: m5")
+
+    monkeypatch.setattr("email_sort.benchmark.benchmark_classification", fail_benchmark)
+
+    args = build_parser().parse_args(["benchmark-classification", "m4"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.command_benchmark_classification(args)
+
+    assert exc.value.code == 2
+    assert "Benchmark configuration error" in capsys.readouterr().out
 
 
 def test_heuristics_uses_progress_for_interactive_runs(monkeypatch):

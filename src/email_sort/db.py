@@ -106,6 +106,7 @@ def create_email_table(c, table_name: str = EMAIL_TABLE):
             category TEXT,
             confidence REAL,
             suggested_category TEXT,
+            summary TEXT,
             classify_model TEXT,
             classify_time REAL,
             action TEXT,
@@ -145,6 +146,7 @@ def create_email_table(c, table_name: str = EMAIL_TABLE):
         ("rule_confidence", "REAL"),
         ("rule_source", "TEXT"),
         ("heuristic_processed_at", "TEXT"),
+        ("summary", "TEXT"),
     ]
     for col_name, col_type in columns:
         add_column_if_missing(c, table_name, col_name, col_type)
@@ -159,6 +161,17 @@ def create_email_table(c, table_name: str = EMAIL_TABLE):
     c.execute(
         f"CREATE INDEX IF NOT EXISTS idx_{table_name}_heuristic_processed_at ON {table_name}(heuristic_processed_at)"
     )
+    c.execute(f"DROP INDEX IF EXISTS idx_{table_name}_classify_queue")
+    c.execute(f"""
+        CREATE INDEX IF NOT EXISTS idx_{table_name}_classify_queue_v2
+        ON {table_name}(id)
+        WHERE COALESCE(category, '') = ''
+          AND COALESCE(rule_category, '') = ''
+          AND COALESCE(heuristic_category, '') = ''
+          AND language = 'en'
+          AND is_not_for_me = 0
+          AND (dmarc_fail = 0 OR dmarc_arc_override = 1)
+    """)
 
 
 def init_db():
