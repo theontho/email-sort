@@ -59,7 +59,7 @@ def command_migrate(args):
 def command_heuristics(args):
     from email_sort.heuristics import run_heuristics
 
-    run_heuristics()
+    run_heuristics(recompute=args.recompute)
 
 
 def command_analyze_senders(args):
@@ -208,6 +208,7 @@ def command_stats(args):
         table.add_column("Source")
         table.add_column("Total", justify="right")
         table.add_column("LLM Classified", justify="right")
+        table.add_column("Rule", justify="right")
         table.add_column("Heuristic", justify="right")
         table.add_column("Duplicates", justify="right")
         table.add_column("Digests", justify="right")
@@ -215,7 +216,8 @@ def command_stats(args):
             f"""
             SELECT source,
                    COUNT(*) AS total,
-                   SUM(CASE WHEN category IS NOT NULL AND category != '' THEN 1 ELSE 0 END) AS classified,
+                   SUM(CASE WHEN classify_model IS NOT NULL AND classify_model != '' THEN 1 ELSE 0 END) AS classified,
+                   SUM(CASE WHEN rule_category IS NOT NULL AND rule_category != '' THEN 1 ELSE 0 END) AS rule_classified,
                    SUM(CASE WHEN heuristic_category IS NOT NULL AND heuristic_category != '' THEN 1 ELSE 0 END) AS heuristic,
                    SUM(CASE WHEN is_duplicate = 1 THEN 1 ELSE 0 END) AS duplicates,
                    SUM(CASE WHEN is_digest = 1 THEN 1 ELSE 0 END) AS digests
@@ -229,25 +231,36 @@ def command_stats(args):
                 row["source"],
                 str(row["total"]),
                 str(row["classified"] or 0),
+                str(row["rule_classified"] or 0),
                 str(row["heuristic"] or 0),
                 str(row["duplicates"] or 0),
                 str(row["digests"] or 0),
             )
         console.print(table)
 
-        category_table = Table(title="Category Distribution")
+        category_table = Table(title="Category Distribution by Source")
+        category_table.add_column("Classification Source")
         category_table.add_column("Category")
         category_table.add_column("Count", justify="right")
         cursor.execute(
             """
-            SELECT category, COUNT(*) AS count FROM (
-                SELECT category FROM emails
-            ) WHERE category IS NOT NULL AND category != ''
-            GROUP BY category ORDER BY count DESC
+            SELECT classification_source, category, COUNT(*) AS count FROM (
+                SELECT 'LLM' AS classification_source, category FROM emails
+                WHERE classify_model IS NOT NULL AND classify_model != ''
+                UNION ALL
+                SELECT 'Rule' AS classification_source, rule_category AS category FROM emails
+                WHERE rule_category IS NOT NULL AND rule_category != ''
+                UNION ALL
+                SELECT 'Heuristic' AS classification_source, heuristic_category AS category FROM emails
+                WHERE heuristic_category IS NOT NULL AND heuristic_category != ''
+            )
+            WHERE category IS NOT NULL AND category != ''
+            GROUP BY classification_source, category
+            ORDER BY classification_source, count DESC
             """
         )
         for row in cursor.fetchall():
-            category_table.add_row(row["category"], str(row["count"]))
+            category_table.add_row(row["classification_source"], row["category"], str(row["count"]))
         console.print(category_table)
     finally:
         conn.close()
@@ -287,109 +300,263 @@ def command_watch(args):
 def build_parser():
     parser = argparse.ArgumentParser(description="email-sort CLI toolkit")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    parser.add_argument("--verbose", "-v", action="store_true")
-    parser.add_argument("--quiet", "-q", action="store_true")
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Enable debug-level logging for this run",
+    )
+    parser.add_argument(
+        "--quiet",
+        "-q",
+        action="store_true",
+        help="Suppress console output and only log errors",
+    )
     parser.add_argument(
         "--log-level",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Override the configured log level",
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    ingest = subparsers.add_parser("ingest", help="Ingest emails")
+    ingest = subparsers.add_parser(
+        "ingest",
+        help="Ingest emails",
+        description="Import email metadata and bodies into the local SQLite database.",
+    )
     ingest_sub = ingest.add_subparsers(dest="source", required=True)
-    fastmail = ingest_sub.add_parser("fastmail", help="Ingest from Fastmail JMAP")
-    fastmail.add_argument("--name", "--source", default="fastmail")
+    fastmail = ingest_sub.add_parser(
+        "fastmail",
+        help="Ingest from Fastmail JMAP",
+        description="Fetch messages from Fastmail using the configured JMAP API token.",
+    )
+    fastmail.add_argument(
+        "--name",
+        "--source",
+        default="fastmail",
+        help="Source name to store for imported Fastmail messages (default: fastmail)",
+    )
     fastmail.set_defaults(func=command_ingest)
-    mbox = ingest_sub.add_parser("mbox", help="Ingest from mbox")
-    mbox.add_argument("mbox_path")
-    mbox.add_argument("--source", dest="source_name", default="gmail")
-    mbox.add_argument("--table", dest="source_name", help=argparse.SUPPRESS)
+    mbox = ingest_sub.add_parser(
+        "mbox",
+        help="Ingest from an mbox file",
+        description="Parse a local mbox export such as Google Takeout and import its messages.",
+    )
+    mbox.add_argument("mbox_path", help="Path to the mbox file to import")
+    mbox.add_argument(
+        "--source",
+        dest="source_name",
+        default="gmail",
+        help="Source name to store for imported mbox messages (default: gmail)",
+    )
     mbox.set_defaults(func=command_ingest)
-    imap = ingest_sub.add_parser("imap", help="Ingest from IMAP")
-    imap.add_argument("--watch", action="store_true")
-    imap.add_argument("--name", "--source", default="imap")
-    imap.add_argument("--table", dest="name", help=argparse.SUPPRESS)
+    imap = ingest_sub.add_parser(
+        "imap",
+        help="Ingest from IMAP",
+        description="Import messages from configured IMAP folders.",
+    )
+    imap.add_argument("--watch", action="store_true", help="Poll configured folders continuously")
+    imap.add_argument(
+        "--name",
+        "--source",
+        default="imap",
+        help="Source name to store for imported IMAP messages (default: imap)",
+    )
     imap.set_defaults(func=command_ingest)
 
-    classify = subparsers.add_parser("classify", help="Classify emails")
-    classify.add_argument("--limit", type=int)
-    classify.add_argument("--source")
-    classify.add_argument("--table", dest="source", help=argparse.SUPPRESS)
-    classify.add_argument("--window", type=int, default=100)
-    classify.add_argument("--reclassify")
+    classify = subparsers.add_parser(
+        "classify",
+        help="Classify emails",
+        description="Classify unprocessed emails using configured OpenAI-compatible LLM servers.",
+    )
+    classify.add_argument("--limit", type=int, help="Maximum number of emails to classify")
+    classify.add_argument("--source", help="Only classify emails from this source")
+    classify.add_argument(
+        "--window",
+        type=int,
+        default=100,
+        help="Number of status lines to keep in the live display (default: 100)",
+    )
+    classify.add_argument(
+        "--reclassify",
+        help="Clear existing classifications first; use 'all' or comma-separated categories",
+    )
     classify.set_defaults(func=command_classify)
 
-    lang = subparsers.add_parser("detect-language")
-    lang.add_argument("--source")
-    lang.add_argument("--table", dest="source", help=argparse.SUPPRESS)
-    lang.add_argument("--batch", type=int, default=1000)
+    lang = subparsers.add_parser(
+        "detect-language",
+        help="Detect email languages",
+        description="Populate missing email language values with the fastText language model.",
+    )
+    lang.add_argument("--source", help="Only process emails from this source")
+    lang.add_argument(
+        "--batch",
+        type=int,
+        default=1000,
+        help="Number of emails to process per database batch (default: 1000)",
+    )
     lang.set_defaults(func=command_detect_language)
 
-    subparsers.add_parser("init-db").set_defaults(func=command_init_db)
-    subparsers.add_parser("migrate").set_defaults(func=command_migrate)
-    subparsers.add_parser("heuristics").set_defaults(func=command_heuristics)
-    subparsers.add_parser("analyze-senders").set_defaults(func=command_analyze_senders)
+    subparsers.add_parser(
+        "init-db",
+        help="Initialize the database",
+        description="Create the local SQLite database schema if it does not already exist.",
+    ).set_defaults(func=command_init_db)
+    subparsers.add_parser(
+        "migrate",
+        help="Run database migrations",
+        description="Apply schema migrations to the configured local SQLite database.",
+    ).set_defaults(func=command_migrate)
+    heuristics = subparsers.add_parser(
+        "heuristics",
+        help="Run heuristic classifiers",
+        description="Apply fast local rules for language, automation, duplicates, digests, and spam signals.",
+    )
+    heuristics.add_argument(
+        "--recompute",
+        action="store_true",
+        help="Re-run the expensive per-email heuristic pass for all emails",
+    )
+    heuristics.set_defaults(func=command_heuristics)
+    subparsers.add_parser(
+        "analyze-senders",
+        help="Analyze sender reputation",
+        description="Aggregate sender and domain statistics used by exports and Sieve generation.",
+    ).set_defaults(func=command_analyze_senders)
 
-    correct = subparsers.add_parser("correct")
-    correct.add_argument("message_id")
-    correct.add_argument("--category", required=True)
-    correct.add_argument("--action", required=True)
+    correct = subparsers.add_parser(
+        "correct",
+        help="Correct one classification",
+        description="Record a manual correction for one email and update sender overrides when repeated.",
+    )
+    correct.add_argument("message_id", help="Message ID or provider ID of the email to correct")
+    correct.add_argument("--category", required=True, help="Correct category to store")
+    correct.add_argument("--action", required=True, help="Correct action to store")
     correct.set_defaults(func=command_correct)
 
-    corrections = subparsers.add_parser("corrections")
+    corrections = subparsers.add_parser(
+        "corrections",
+        help="Manage manual corrections",
+        description="List or export classification corrections for review and fine-tuning data.",
+    )
     corr_sub = corrections.add_subparsers(dest="corrections_action", required=True)
-    corr_sub.add_parser("list").set_defaults(func=command_corrections_list)
-    corr_export = corr_sub.add_parser("export")
-    corr_export.add_argument("--output", "-o")
+    corr_sub.add_parser(
+        "list",
+        help="List recorded corrections",
+        description="Print all manual corrections ordered by most recent first.",
+    ).set_defaults(func=command_corrections_list)
+    corr_export = corr_sub.add_parser(
+        "export",
+        help="Export corrections as JSONL",
+        description="Write manual corrections to a JSONL file for review or model training.",
+    )
+    corr_export.add_argument(
+        "--output",
+        "-o",
+        help="Output JSONL path (default: out/corrections.jsonl)",
+    )
     corr_export.set_defaults(func=command_corrections_export)
 
-    unsub = subparsers.add_parser("unsubscribe")
+    unsub = subparsers.add_parser(
+        "unsubscribe",
+        help="Process unsubscribe candidates",
+        description="Find and optionally execute safe unsubscribe actions for promotional senders.",
+    )
     mode = unsub.add_mutually_exclusive_group()
-    mode.add_argument("--dry-run", action="store_true")
-    mode.add_argument("--execute", action="store_true")
-    unsub.add_argument("--yes", action="store_true")
+    mode.add_argument(
+        "--dry-run", action="store_true", help="Preview candidates without taking action"
+    )
+    mode.add_argument("--execute", action="store_true", help="Attempt unsubscribe actions")
+    unsub.add_argument("--yes", action="store_true", help="Skip interactive confirmation prompts")
     unsub.set_defaults(func=command_unsubscribe)
 
-    subparsers.add_parser("verify-unsubscribes").set_defaults(func=command_verify_unsubscribes)
+    subparsers.add_parser(
+        "verify-unsubscribes",
+        help="Check unsubscribe failures",
+        description="Find senders that continued sending mail after a successful unsubscribe attempt.",
+    ).set_defaults(func=command_verify_unsubscribes)
 
-    sieve = subparsers.add_parser("sieve")
+    sieve = subparsers.add_parser(
+        "sieve",
+        help="Generate or upload Sieve filters",
+        description="Create, diff, or upload ManageSieve filters from sender analysis and overrides.",
+    )
     sieve_sub = sieve.add_subparsers(dest="sieve_action", required=True)
-    for action in ("generate", "upload", "diff"):
-        child = sieve_sub.add_parser(action)
-        child.add_argument("--output", "-o", default="out/filters.sieve")
+    sieve_help = {
+        "generate": "Generate a local Sieve script",
+        "upload": "Upload a Sieve script to the server",
+        "diff": "Compare local script with active remote script",
+    }
+    for action, help_text in sieve_help.items():
+        child = sieve_sub.add_parser(action, help=help_text, description=help_text + ".")
+        child.add_argument(
+            "--output",
+            "-o",
+            default="out/filters.sieve",
+            help="Path to the local Sieve script (default: out/filters.sieve)",
+        )
         child.set_defaults(func=command_sieve)
 
-    export = subparsers.add_parser("export")
+    export = subparsers.add_parser(
+        "export",
+        help="Export reports",
+        description="Write CSV or JSONL report files from the classified email database.",
+    )
     export.set_defaults(func=command_export, export_type=None)
     export_sub = export.add_subparsers(dest="export_type")
-    export_sub.add_parser("all").set_defaults(func=command_export)
-    export_sub.add_parser("ban-list").set_defaults(func=command_export)
-    export_sub.add_parser("unsubscribe-list").set_defaults(func=command_export)
-    export_corr = export_sub.add_parser("corrections")
-    export_corr.add_argument("--output", "-o")
+    export_sub.add_parser(
+        "all",
+        help="Export all reports",
+        description="Export sender reputation, ban list, and unsubscribe list reports.",
+    ).set_defaults(func=command_export)
+    export_sub.add_parser(
+        "ban-list",
+        help="Export sender/domain ban candidates",
+        description="Write domains and senders that look unsafe or unwanted to CSV.",
+    ).set_defaults(func=command_export)
+    export_sub.add_parser(
+        "unsubscribe-list",
+        help="Export unsubscribe candidates",
+        description="Write senders with unsubscribe links and promotional classifications to CSV.",
+    ).set_defaults(func=command_export)
+    export_corr = export_sub.add_parser(
+        "corrections",
+        help="Export corrections as JSONL",
+        description="Write manual corrections to a JSONL file.",
+    )
+    export_corr.add_argument(
+        "--output",
+        "-o",
+        help="Output JSONL path (default: out/corrections.jsonl)",
+    )
     export_corr.set_defaults(func=command_export)
 
-    subparsers.add_parser("stats").set_defaults(func=command_stats)
-    subparsers.add_parser("config").set_defaults(func=command_config)
-    precheck = subparsers.add_parser("precheck")
-    precheck.add_argument("--check-servers", action="store_true")
+    subparsers.add_parser(
+        "stats",
+        help="Show database statistics",
+        description="Print source and category totals from the local email database.",
+    ).set_defaults(func=command_stats)
+    subparsers.add_parser(
+        "config",
+        help="Show resolved configuration",
+        description="Print config paths, database path, log paths, and configured LLM servers.",
+    ).set_defaults(func=command_config)
+    precheck = subparsers.add_parser(
+        "precheck",
+        help="Check local setup",
+        description="Validate configuration, writable paths, language model availability, and optional servers.",
+    )
+    precheck.add_argument(
+        "--check-servers",
+        action="store_true",
+        help="Perform HTTP health checks against configured LLM servers",
+    )
     precheck.set_defaults(func=command_precheck)
-    subparsers.add_parser("watch").set_defaults(func=command_watch)
-
-    legacy_fastmail = subparsers.add_parser("ingest-fastmail")
-    legacy_fastmail.add_argument("--source", default="fastmail")
-    legacy_fastmail.set_defaults(
-        func=lambda args: command_ingest(argparse.Namespace(source="fastmail", name=args.source))
-    )
-    legacy_mbox = subparsers.add_parser("ingest-mbox")
-    legacy_mbox.add_argument("mbox_path")
-    legacy_mbox.add_argument("--source", default="gmail")
-    legacy_mbox.add_argument("--table", dest="source", help=argparse.SUPPRESS)
-    legacy_mbox.set_defaults(
-        func=lambda args: command_ingest(
-            argparse.Namespace(source="mbox", mbox_path=args.mbox_path, source_name=args.source)
-        )
-    )
+    subparsers.add_parser(
+        "watch",
+        help="Watch live statistics",
+        description="Refresh database statistics every five seconds until interrupted.",
+    ).set_defaults(func=command_watch)
 
     return parser
 

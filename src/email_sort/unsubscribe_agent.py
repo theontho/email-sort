@@ -246,12 +246,20 @@ def unsubscribe_candidates(limit: int | None = None) -> list[dict]:
         candidates: dict[str, dict] = {}
         query = f"""
             SELECT sender, sender_domain, list_unsubscribe, list_unsubscribe_post,
-                   body_unsubscribe_links, category, heuristic_category, is_digest
+                   body_unsubscribe_links,
+                   COALESCE(
+                       CASE WHEN rule_source = 'manual-correction' THEN rule_category END,
+                       category,
+                       rule_category,
+                       heuristic_category
+                   ) AS category,
+                   rule_category, heuristic_category, is_digest
             FROM {EMAIL_TABLE}
             WHERE sender IS NOT NULL AND sender != ''
               AND (list_unsubscribe IS NOT NULL OR body_unsubscribe_links IS NOT NULL)
               AND (
                   category IN ('Promotional','Newsletter','Spam','Social','Shopping','Tech','Health')
+                  OR rule_category IN ('Promotional','Newsletter','Spam','Social','Shopping','Tech','Health','Automated')
                   OR heuristic_category IN ('Promotional','Newsletter','Spam','Social','Shopping','Tech','Health','Automated')
                   OR is_digest = 1
               )

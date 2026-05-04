@@ -12,6 +12,7 @@ from openai import OpenAI
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
+from rich.panel import Panel
 from rich.table import Table
 
 from email_sort.config import get_config_dir, get_servers, get_setting
@@ -28,6 +29,7 @@ console = Console()
 # Setup logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+logger.propagate = False
 
 log_path = get_config_dir() / "classification.log"
 file_handler = logging.FileHandler(str(log_path))
@@ -86,6 +88,12 @@ finished_tasks: collections.deque[str] = collections.deque(maxlen=100)
 display_lock = threading.Lock()
 
 
+def add_log(msg):
+    logger.info(msg)
+    with display_lock:
+        finished_tasks.appendleft(msg)
+
+
 def update_status(email_id, msg, is_finished=False):
     # Log to file
     logger.info(msg)
@@ -99,33 +107,45 @@ def update_status(email_id, msg, is_finished=False):
             active_tasks[email_id] = msg
 
 
-def create_display_table():
+def _grid(rows: list[str], empty_message: str) -> Table:
     table = Table.grid(expand=True)
     table.add_column(no_wrap=True)
-
-    with display_lock:
-        active = list(active_tasks.values())
-        finished = list(finished_tasks)
-
-    rows = active + finished
-
-    # Use almost the entire height minus progress bar
-    display_height = max(5, console.size.height - 1)
-
-    for i in range(display_height - 1):  # -1 for progress bar
-        if i < len(rows):
-            table.add_row(rows[i])
-        else:
-            table.add_row(" ")
-
+    if not rows:
+        table.add_row(f"[dim]{empty_message}[/dim]")
+        return table
+    for row in rows:
+        table.add_row(row)
     return table
 
 
-class StatusDisplay:
-    """A dynamic renderable for the status window."""
+def create_active_panel():
+    with display_lock:
+        active = list(active_tasks.values())
+    return Panel(
+        _grid(active, "No active workers yet"), title="Active Workers", border_style="blue"
+    )
+
+
+def create_log_panel():
+    with display_lock:
+        rows = list(finished_tasks)
+    return Panel(
+        _grid(rows, "Waiting for classification results"), title="Recent Log", border_style="green"
+    )
+
+
+class ActiveDisplay:
+    """A dynamic renderable for active worker status."""
 
     def __rich__(self):
-        return create_display_table()
+        return create_active_panel()
+
+
+class LogDisplay:
+    """A dynamic renderable for completed classification logs."""
+
+    def __rich__(self):
+        return create_log_panel()
 
 
 VALID_CATEGORIES = {
@@ -210,17 +230,15 @@ def classification_writer(
             if item is None:
                 break
             pending.append(item)
+            if pbar and pbar_task is not None:
+                pbar.update(pbar_task, advance=1)
             if len(pending) >= batch_size:
                 _write_batch(cursor, pending)
                 conn.commit()
-                if pbar and pbar_task is not None:
-                    pbar.update(pbar_task, advance=len(pending))
                 pending.clear()
         if pending:
             _write_batch(cursor, pending)
             conn.commit()
-            if pbar and pbar_task is not None:
-                pbar.update(pbar_task, advance=len(pending))
     finally:
         conn.close()
 
@@ -310,6 +328,7 @@ def classify_single_email(worker_pool, result_queue, row):
 def classify_emails(limit=None, source=None, window=100, reclassify=None):
     from email_sort.db import init_db
 
+    print("Starting classification... (can take a while)", flush=True)
     init_db()
     global finished_tasks
     finished_tasks = collections.deque(maxlen=window)
@@ -352,15 +371,15 @@ def classify_emails(limit=None, source=None, window=100, reclassify=None):
 
     override_count = apply_sender_prefilters(source)
     reply_count = apply_has_user_reply_prefilter(source)
-    if override_count or reply_count:
-        print(
-            f"Applied prefilters: {override_count} sender overrides, {reply_count} user-reply senders"
-        )
+    add_log(
+        f"Applied prefilters: {override_count} sender overrides, {reply_count} user-reply senders"
+    )
 
     query = f"""
         SELECT id, sender, subject, snippet
         FROM {EMAIL_TABLE}
         WHERE (category IS NULL OR category = '')
+        AND (rule_category IS NULL OR rule_category = '')
         AND (heuristic_category IS NULL OR heuristic_category = '')
         AND language = 'en'
         AND is_not_for_me = 0
@@ -368,7 +387,7 @@ def classify_emails(limit=None, source=None, window=100, reclassify=None):
         {source_filter}
         ORDER BY id
     """
-    if limit:
+    if limit is not None:
         query += " LIMIT ?"
         params.append(limit)
 
@@ -384,16 +403,23 @@ def classify_emails(limit=None, source=None, window=100, reclassify=None):
     worker_pool, total_workers = get_worker_pool()
     if total_workers <= 0:
         raise RuntimeError("No classification workers configured")
-    logger.info(f"Starting classification with {total_workers} workers across multiple servers")
+    add_log(f"Starting classification with {total_workers} workers across multiple servers")
+    add_log(f"Queued {len(all_rows)} emails for classification")
 
     # Progress tracking
     layout = Layout()
-    layout.split_column(Layout(name="status"), Layout(name="progress", size=3))
+    active_panel_size = max(5, total_workers + 4)
+    layout.split_column(
+        Layout(name="active", size=active_panel_size),
+        Layout(name="log", ratio=2, minimum_size=8),
+        Layout(name="progress", size=3),
+    )
 
     progress = make_progress(spinner=True, bar_width=None, console=console, expand=True)
     pbar_task = progress.add_task("Classifying Emails...", total=len(all_rows))
     layout["progress"].update(progress)
-    layout["status"].update(StatusDisplay())
+    layout["active"].update(ActiveDisplay())
+    layout["log"].update(LogDisplay())
 
     try:
         with Live(layout, refresh_per_second=4, console=console, screen=True):
@@ -429,7 +455,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Classify emails using LLM")
     parser.add_argument("--limit", type=int, help="Maximum number of emails to classify")
     parser.add_argument("--source", type=str, help="Only classify one source")
-    parser.add_argument("--table", dest="source", help=argparse.SUPPRESS)
     parser.add_argument("--window", type=int, default=100, help="Number of status lines to buffer")
     parser.add_argument(
         "--reclassify",

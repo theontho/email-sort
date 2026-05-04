@@ -51,13 +51,13 @@ email-sort init-db
 **For MBOX (e.g., Google Takeout):**
 Extract your `.mbox` file and run:
 ```bash
-email-sort ingest-mbox path/to/your/Takeout.mbox
+email-sort ingest mbox path/to/your/Takeout.mbox
 ```
 
 **For Fastmail:**
 Ensure your `fastmail_token` is set in `conf.toml` and run:
 ```bash
-email-sort ingest-fastmail
+email-sort ingest fastmail
 ```
 
 ### 4. Run Fast Heuristics

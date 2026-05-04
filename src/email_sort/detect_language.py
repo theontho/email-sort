@@ -114,7 +114,6 @@ if __name__ == "__main__":
         type=str,
         help="Only process one source",
     )
-    parser.add_argument("--table", dest="source", help=argparse.SUPPRESS)
     parser.add_argument("--batch", type=int, default=1000, help="Batch size for processing")
     args = parser.parse_args()
 

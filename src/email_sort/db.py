@@ -6,7 +6,6 @@ from email_sort.config import get_config_dir, get_setting
 
 EMAIL_TABLE = "emails"
 EMAIL_TABLES = (EMAIL_TABLE,)
-LEGACY_EMAIL_TABLES = ("fastmail", "google_emails")
 
 
 def _get_db_path() -> Path:
@@ -99,6 +98,11 @@ def create_email_table(c, table_name: str = EMAIL_TABLE):
             heuristic_category TEXT,
             heuristic_action TEXT,
             heuristic_confidence REAL,
+            rule_category TEXT,
+            rule_action TEXT,
+            rule_confidence REAL,
+            rule_source TEXT,
+            heuristic_processed_at TEXT,
             category TEXT,
             confidence REAL,
             suggested_category TEXT,
@@ -136,6 +140,11 @@ def create_email_table(c, table_name: str = EMAIL_TABLE):
         ("heuristic_category", "TEXT"),
         ("heuristic_action", "TEXT"),
         ("heuristic_confidence", "REAL"),
+        ("rule_category", "TEXT"),
+        ("rule_action", "TEXT"),
+        ("rule_confidence", "REAL"),
+        ("rule_source", "TEXT"),
+        ("heuristic_processed_at", "TEXT"),
     ]
     for col_name, col_type in columns:
         add_column_if_missing(c, table_name, col_name, col_type)
@@ -146,6 +155,10 @@ def create_email_table(c, table_name: str = EMAIL_TABLE):
     )
     c.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_message_id ON {table_name}(message_id)")
     c.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_category ON {table_name}(category)")
+    c.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_thread_id ON {table_name}(thread_id)")
+    c.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{table_name}_heuristic_processed_at ON {table_name}(heuristic_processed_at)"
+    )
 
 
 def init_db():

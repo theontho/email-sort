@@ -11,14 +11,13 @@ def _parse_date(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         try:
             parsed = email.utils.parsedate_to_datetime(value)
-            pass
         except Exception:
             return None
-    if parsed and parsed.tzinfo:
+    if parsed.tzinfo:
         return parsed.astimezone(UTC).replace(tzinfo=None)
     return parsed
 
@@ -76,8 +75,8 @@ def _compute(scope: str, key: str, rows: list[dict]) -> dict:
     hours = [date.hour for date in dates]
     sender_domain = rows[0].get("sender_domain") or (key if scope == "domain" else "")
     total = len(rows)
-    spam_count = sum(1 for row in rows if row.get("category") == "Spam")
-    promo_count = sum(1 for row in rows if row.get("category") == "Promotional")
+    spam_count = sum(1 for row in rows if row.get("effective_category") == "Spam")
+    promo_count = sum(1 for row in rows if row.get("effective_category") == "Promotional")
     dmarc_failures = sum(1 for row in rows if row.get("dmarc_fail"))
     weekdays = [date.weekday() for date in dates]
 
@@ -104,7 +103,13 @@ def _load_rows(cursor) -> list[dict]:
     cursor.execute(
         f"""
         SELECT sender, sender_domain, to_address, subject, date,
-               COALESCE(category, heuristic_category) AS category, dmarc_fail
+               COALESCE(
+                   CASE WHEN rule_source = 'manual-correction' THEN rule_category END,
+                   category,
+                   rule_category,
+                   heuristic_category
+               ) AS effective_category,
+               dmarc_fail
         FROM {EMAIL_TABLE}
         WHERE sender IS NOT NULL AND sender != ''
         """
@@ -205,8 +210,11 @@ def apply_has_user_reply_prefilter(source: str | None = None) -> int:
         cursor.execute(
             f"""
             UPDATE {EMAIL_TABLE}
-            SET category = 'Personal', action = 'Mandatory', confidence = COALESCE(confidence, 1.0)
-            WHERE (category IS NULL OR category = '')
+            SET rule_category = 'Personal',
+                rule_action = 'Mandatory',
+                rule_confidence = 1.0,
+                rule_source = 'user-reply'
+            WHERE (rule_category IS NULL OR rule_category = '')
               {source_filter}
               AND EXISTS (
                   SELECT 1 FROM sender_stats s
