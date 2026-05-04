@@ -317,7 +317,9 @@ def test_classify_limit_zero_does_not_process_rows(monkeypatch, capsys):
 
     classify.classify_emails(limit=0)
 
-    assert "No emails to classify." in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "No emails to classify." in output
+    assert "classification complete (classified 0 emails in" in output
 
 
 def test_classify_skips_rule_classified_rows(monkeypatch, capsys):
@@ -394,6 +396,34 @@ def test_classification_writer_advances_progress_per_result(monkeypatch):
     assert progress.advanced == 2
     assert len(written_batches) == 1
     assert len(written_batches[0]) == 2
+
+
+def test_classification_writer_counts_written_results(monkeypatch):
+    from email_sort.classify import classification_writer
+
+    result_queue = __import__("queue").Queue()
+    result_queue.put(
+        ("Finance", 0.9, "Receipt", "Receipt for recent purchase", "Informational", "model", 1.0, 1)
+    )
+    result_queue.put(
+        ("Security", 0.8, "Login", "New login notification", "Authentication", "model", 1.0, 2)
+    )
+    result_queue.put(None)
+    stats = {"classified": 0}
+
+    monkeypatch.setattr("email_sort.classify._write_batch", lambda cursor, batch: None)
+
+    classification_writer(result_queue, None, None, batch_size=1, stats=stats)
+
+    assert stats["classified"] == 2
+
+
+def test_format_duration_for_classification_summary():
+    from email_sort.classify import _format_duration
+
+    assert _format_duration(33) == "33s"
+    assert _format_duration(123) == "2m3s"
+    assert _format_duration(7413) == "2h3m33s"
 
 
 def test_domain_matching_uses_parsed_addresses():
@@ -861,6 +891,161 @@ def test_heuristics_uses_progress_for_interactive_runs(monkeypatch):
             ("2",),
         )
         assert cursor.fetchone()["heuristic_category"] == "Newsletter"
+    finally:
+        conn.close()
+
+
+def test_heuristics_match_personal_alias_domains(monkeypatch):
+    from email_sort import heuristics
+
+    class FakeModel:
+        def predict(self, text):
+            return (["__label__en"], [0.99])
+
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        create_email_table(cursor)
+        cursor.execute(
+            f"""
+            INSERT INTO {EMAIL_TABLE} (
+                source, provider_id, sender, sender_domain, subject, snippet,
+                to_address, delivered_to, headers, body_html, dmarc_fail,
+                has_arc, arc_auth_results
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "test",
+                "alias",
+                "alerts@example.com",
+                "example.com",
+                "Hello",
+                "Body",
+                "Alias <chase@s.hmmfn.com>",
+                "",
+                "{}",
+                "",
+                0,
+                0,
+                "",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(heuristics, "download_model", lambda: None)
+    monkeypatch.setattr(heuristics.fasttext, "load_model", lambda path: FakeModel())
+    monkeypatch.setattr(heuristics.sys.stdout, "isatty", lambda: False)
+    monkeypatch.setattr(heuristics, "get_setting", lambda key, default=None: ["hmmfn.com"] if key == "my_domains" else default)
+
+    heuristics.run_heuristics()
+
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT is_not_for_me FROM {EMAIL_TABLE} WHERE provider_id = ?",
+            ("alias",),
+        )
+        assert cursor.fetchone()["is_not_for_me"] == 0
+    finally:
+        conn.close()
+
+
+def test_heuristics_classify_obvious_notifications(monkeypatch):
+    from email_sort import heuristics
+
+    class FakeModel:
+        def predict(self, text):
+            return (["__label__en"], [0.99])
+
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        create_email_table(cursor)
+        cursor.executemany(
+            f"""
+            INSERT INTO {EMAIL_TABLE} (
+                source, provider_id, sender, sender_domain, subject, snippet,
+                to_address, headers, body_html, dmarc_fail, has_arc,
+                arc_auth_results
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "test",
+                    "shipping",
+                    "trackingupdates@fedex.com",
+                    "fedex.com",
+                    "FedEx Shipment 123 Delivered",
+                    "Your package was delivered",
+                    "me@example.com",
+                    '{"List-Id": "marketing.fedex.com"}',
+                    "",
+                    0,
+                    0,
+                    "",
+                ),
+                (
+                    "test",
+                    "security",
+                    "security@example.com",
+                    "example.com",
+                    "Your verification code is 123456",
+                    "Use this one-time code to sign in",
+                    "me@example.com",
+                    "{}",
+                    "",
+                    0,
+                    0,
+                    "",
+                ),
+                (
+                    "test",
+                    "finance",
+                    "no.reply.alerts@chase.com",
+                    "chase.com",
+                    "Your credit card payment is due",
+                    "Minimum payment due soon",
+                    "me@example.com",
+                    "{}",
+                    "",
+                    0,
+                    0,
+                    "",
+                ),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(heuristics, "download_model", lambda: None)
+    monkeypatch.setattr(heuristics.fasttext, "load_model", lambda path: FakeModel())
+    monkeypatch.setattr(heuristics.sys.stdout, "isatty", lambda: False)
+    monkeypatch.setattr(heuristics, "get_setting", lambda key, default=None: ["example.com"] if key == "my_domains" else default)
+
+    heuristics.run_heuristics()
+
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT provider_id, heuristic_category, heuristic_action, heuristic_matches
+            FROM {EMAIL_TABLE}
+            ORDER BY provider_id
+            """
+        )
+        rows = {row["provider_id"]: row for row in cursor.fetchall()}
+        assert rows["shipping"]["heuristic_category"] == "Shipping"
+        assert rows["shipping"]["heuristic_action"] == "Informational"
+        assert "List-Id" not in rows["shipping"]["heuristic_matches"]
+        assert rows["security"]["heuristic_category"] == "Security"
+        assert rows["security"]["heuristic_action"] == "Authentication"
+        assert rows["finance"]["heuristic_category"] == "Finance"
+        assert rows["finance"]["heuristic_action"] == "Mandatory"
     finally:
         conn.close()
 
