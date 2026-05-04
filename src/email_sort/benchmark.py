@@ -1,6 +1,10 @@
 import csv
 import json
+import re
+import shutil
 import statistics
+import subprocess
+import sys
 import time
 from collections import defaultdict
 from datetime import datetime
@@ -13,6 +17,7 @@ from openai import OpenAI
 from email_sort.classify import parse_classification
 from email_sort.config import get_servers, get_setting
 from email_sort.db import EMAIL_TABLE, get_db
+from email_sort.progress import make_progress
 
 CLASSIFICATION_SYSTEM_PROMPT = (
     "You are a highly efficient email classifier. Output ONLY five items, comma separated: "
@@ -53,16 +58,41 @@ CSV_FIELDNAMES = [
     "parse_valid",
 ]
 
+BACKENDS = ("openai", "opencode")
+BENCHMARK_EMAIL_EXCERPT_CHARS = 2000
+
+
+def _opencode_executable() -> str:
+    executable = shutil.which("opencode")
+    if not executable:
+        raise RuntimeError("opencode executable not found on PATH")
+    return executable
+
 
 def _markdown_escape(value: Any) -> str:
     return str(value or "").replace("|", "\\|").replace("\n", "<br>")
+
+
+def _email_excerpt(
+    value: str, limit: int = BENCHMARK_EMAIL_EXCERPT_CHARS, redact: bool = False
+) -> str:
+    text = value or ""
+    if redact:
+        text = re.sub(r"[\w.+-]+@[\w.-]+", "[email]", text)
+        text = re.sub(r"https?://\S+", "[url]", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > limit:
+        return text[: limit - 1].rstrip() + "…"
+    return text
 
 
 def _server_by_name(server_name: str) -> dict[str, Any]:
     for server in get_servers():
         if server.get("name") == server_name and not server.get("disabled", False):
             return server
-    raise ValueError(f"No enabled server named {server_name!r} found")
+    enabled = [server.get("name") for server in get_servers() if not server.get("disabled", False)]
+    available = ", ".join(str(name) for name in enabled) or "none"
+    raise ValueError(f"No enabled server named {server_name!r} found. Available servers: {available}")
 
 
 def _model_context(base_url: str, model_id: str) -> dict[str, Any]:
@@ -118,6 +148,49 @@ def _available_chat_models(client: OpenAI) -> list[str]:
     ]
 
 
+def available_opencode_models(provider: str | None = None) -> list[str]:
+    command = [_opencode_executable(), "models"]
+    if provider:
+        command.append(provider)
+    result = subprocess.run(  # noqa: S603 - argv is explicit; optional provider is not a shell string.
+        command, check=True, capture_output=True, text=True, timeout=60
+    )
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _opencode_classify(model: str, prompt: str, timeout: float, agent: str) -> str:
+    message = f"{CLASSIFICATION_SYSTEM_PROMPT}\n\n{prompt}"
+    result = subprocess.run(  # noqa: S603 - argv is explicit; prompt/model are not shell strings.
+        [
+            _opencode_executable(),
+            "run",
+            "--pure",
+            "--model",
+            model,
+            "--agent",
+            agent,
+            "--format",
+            "json",
+            message,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    texts = []
+    for line in result.stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "text":
+            text = event.get("part", {}).get("text")
+            if text:
+                texts.append(text)
+    return "\n".join(texts).strip()
+
+
 def _write_markdown(
     csv_path: Path,
     md_path: Path,
@@ -147,6 +220,7 @@ def _write_markdown(
         "# Classification Benchmark",
         "",
         f"- Run ID: `{metadata['run_id']}`",
+        f"- Backend: `{metadata['backend']}`",
         f"- Server: `{metadata['server_name']}` `{metadata['server_url']}`",
         f"- Samples: `{metadata['sample_count']}` real emails where `body_text` is longer than `snippet`",
         f"- Caps: `{', '.join(str(cap) for cap in caps)}` body characters",
@@ -178,6 +252,24 @@ def _write_markdown(
         lines.append(
             f"| {sample['email_id']} | {sample['email_date']} | "
             f"{sample['subject_chars']} | {sample['snippet_chars']} | {sample['body_chars']} |"
+        )
+
+    lines.extend(["", "## Benchmark Email Inputs"])
+    for sample in metadata["samples"]:
+        lines.extend(
+            [
+                "",
+                f"### Email {sample['email_id']}",
+                "",
+                f"- Date: `{sample['email_date']}`",
+                f"- Sender: `{_markdown_escape(sample.get('sender', ''))}`",
+                f"- Subject: {_markdown_escape(sample.get('subject', ''))}",
+                f"- Body chars: `{sample['body_chars']}`",
+                "",
+                "```text",
+                sample.get("body_excerpt", ""),
+                "```",
+            ]
         )
 
     lines.extend(
@@ -260,7 +352,7 @@ def _write_markdown(
 
 
 def benchmark_classification(
-    server_name: str,
+    server_name: str | None,
     caps: list[int],
     sample_count: int = 3,
     models: list[str] | None = None,
@@ -268,29 +360,64 @@ def benchmark_classification(
     source: str | None = None,
     timeout: float = 300.0,
     max_tokens: int = 256,
+    backend: str = "openai",
+    opencode_agent: str = "summary",
+    opencode_provider: str | None = None,
+    progress: bool = True,
+    redact_inputs: bool = False,
 ) -> dict[str, Path | int]:
     if not caps:
         raise ValueError("At least one body cap is required")
-    server = _server_by_name(server_name)
+    if backend not in BACKENDS:
+        raise ValueError(f"Unsupported benchmark backend {backend!r}")
+    if not server_name:
+        if backend == "openai":
+            servers = [server for server in get_servers() if not server.get("disabled", False)]
+            if len(servers) != 1:
+                raise ValueError("server is required when zero or multiple OpenAI servers are configured")
+            server_name = servers[0]["name"]
+        else:
+            server_name = opencode_provider or "opencode"
+    server = (
+        _server_by_name(server_name)
+        if backend == "openai"
+        else {"name": server_name, "url": f"opencode:{server_name}"}
+    )
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_path = output_path / f"{server_name}_classification_benchmark_{run_id}.csv"
     md_path = output_path / f"{server_name}_classification_benchmark_{run_id}.md"
 
-    client = OpenAI(
-        base_url=server["url"],
-        api_key=server.get("api_key") or get_setting("lmstudio_key", "lm-studio"),
-    )
-    benchmark_models = models or _available_chat_models(client)
+    client = None
+    if backend == "openai":
+        client = OpenAI(
+            base_url=server["url"],
+            api_key=server.get("api_key") or get_setting("lmstudio_key", "lm-studio"),
+        )
+        benchmark_models = models or _available_chat_models(client)
+    else:
+        benchmark_models = models or available_opencode_models(opencode_provider)
     rows = _sample_rows(sample_count, max(caps), source)
     if len(rows) < sample_count:
         raise ValueError(f"Only found {len(rows)} benchmark samples")
 
     base_url = server["url"].rsplit("/v1", 1)[0]
     model_contexts: dict[str, dict[str, Any]] = {}
+    total_requests = len(rows) * len(caps) * len(benchmark_models)
+    completed_requests = 0
+    started_at = time.time()
+    last_log_at = started_at
+    progress_bar = None
+    progress_task = None
+    use_progress_bar = progress and sys.stdout.isatty()
+    if use_progress_bar:
+        progress_bar = make_progress(spinner=True)
+        progress_bar.start()
+        progress_task = progress_bar.add_task("Benchmarking classification", total=total_requests)
     metadata = {
         "run_id": run_id,
+        "backend": backend,
         "server_name": server_name,
         "server_url": server["url"],
         "models": benchmark_models,
@@ -299,48 +426,68 @@ def benchmark_classification(
         "source": source,
         "timeout_seconds": timeout,
         "max_tokens": max_tokens,
+        "opencode_agent": opencode_agent,
+        "opencode_provider": opencode_provider,
+        "redact_inputs": redact_inputs,
         "samples": [
             {
                 "email_id": row["id"],
                 "email_date": row.get("date") or "",
+                "sender": row.get("sender") or "",
+                "subject": row.get("subject") or "",
                 "subject_chars": len(row.get("subject") or ""),
                 "snippet_chars": len(row.get("snippet") or ""),
                 "body_chars": len(row.get("body_text") or ""),
+                "body_excerpt": _email_excerpt(
+                    row.get("body_text") or row.get("snippet") or "",
+                    redact=redact_inputs,
+                ),
             }
             for row in rows
         ],
     }
 
-    with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=CSV_FIELDNAMES)
-        writer.writeheader()
-        csv_file.flush()
+    try:
+        with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=CSV_FIELDNAMES)
+            writer.writeheader()
+            csv_file.flush()
 
-        try:
             for model in benchmark_models:
+                if progress and not use_progress_bar:
+                    _benchmark_progress_log(
+                        f"Starting benchmark model={model}",
+                        completed_requests,
+                        total_requests,
+                        started_at,
+                        force=True,
+                    )
                 warm_failed = False
                 warm_error = ""
                 try:
                     warm = rows[0]
-                    client.chat.completions.create(
-                        model=model,
-                        messages=[
-                            {"role": "system", "content": CLASSIFICATION_SYSTEM_PROMPT},
-                            {
-                                "role": "user",
-                                "content": f"Sender: {warm['sender']}\nSubject: {warm['subject']}\nDate: {warm['date']}\nBody:\n{warm['body_text'][:500]}",
-                            },
-                        ],
-                        temperature=0.1,
-                        timeout=timeout,
-                        max_tokens=max_tokens,
-                        extra_body={"reasoning_effort": "none"},
-                    )
+                    warm_prompt = f"Sender: {warm['sender']}\nSubject: {warm['subject']}\nDate: {warm['date']}\nBody:\n{warm['body_text'][:500]}"
+                    if backend == "openai":
+                        if client is None:
+                            raise RuntimeError("OpenAI client was not initialized")
+                        client.chat.completions.create(
+                            model=model,
+                            messages=[
+                                {"role": "system", "content": CLASSIFICATION_SYSTEM_PROMPT},
+                                {"role": "user", "content": warm_prompt},
+                            ],
+                            temperature=0.1,
+                            timeout=timeout,
+                            max_tokens=max_tokens,
+                            extra_body={"reasoning_effort": "none"},
+                        )
+                    else:
+                        _opencode_classify(model, warm_prompt, timeout, opencode_agent)
                 except Exception as exc:
                     warm_failed = True
                     warm_error = f"{type(exc).__name__}: {str(exc)[:500]}"
 
-                context = _model_context(base_url, model)
+                context = _model_context(base_url, model) if backend == "openai" else {"state": "cli"}
                 model_contexts[model] = context
 
                 if warm_failed:
@@ -362,6 +509,9 @@ def benchmark_classification(
                     _write_markdown(
                         csv_path, md_path, metadata, benchmark_models, caps, model_contexts
                     )
+                    completed_requests += len(rows) * len(caps)
+                    if progress_bar and progress_task is not None:
+                        progress_bar.update(progress_task, advance=len(rows) * len(caps))
                     continue
 
                 for cap in caps:
@@ -381,18 +531,25 @@ def benchmark_classification(
                         parsed_action = ""
                         parse_valid = False
                         try:
-                            completion = client.chat.completions.create(
-                                model=model,
-                                messages=[
-                                    {"role": "system", "content": CLASSIFICATION_SYSTEM_PROMPT},
-                                    {"role": "user", "content": prompt},
-                                ],
-                                temperature=0.1,
-                                timeout=timeout,
-                                max_tokens=max_tokens,
-                                extra_body={"reasoning_effort": "none"},
-                            )
-                            raw_output = (completion.choices[0].message.content or "").strip()
+                            if backend == "openai":
+                                if client is None:
+                                    raise RuntimeError("OpenAI client was not initialized")
+                                completion = client.chat.completions.create(
+                                    model=model,
+                                    messages=[
+                                        {"role": "system", "content": CLASSIFICATION_SYSTEM_PROMPT},
+                                        {"role": "user", "content": prompt},
+                                    ],
+                                    temperature=0.1,
+                                    timeout=timeout,
+                                    max_tokens=max_tokens,
+                                    extra_body={"reasoning_effort": "none"},
+                                )
+                                raw_output = (completion.choices[0].message.content or "").strip()
+                            else:
+                                raw_output = _opencode_classify(
+                                    model, prompt, timeout, opencode_agent
+                                )
                             (
                                 parsed_category,
                                 confidence,
@@ -437,15 +594,51 @@ def benchmark_classification(
                         _write_markdown(
                             csv_path, md_path, metadata, benchmark_models, caps, model_contexts
                         )
-        finally:
+                        completed_requests += 1
+                        if progress_bar and progress_task is not None:
+                            progress_bar.update(
+                                progress_task,
+                                advance=1,
+                                description=f"{model} cap={cap}",
+                            )
+                        elif progress:
+                            now = time.time()
+                            if now - last_log_at >= 30 or completed_requests == total_requests:
+                                _benchmark_progress_log(
+                                    "Benchmark progress",
+                                    completed_requests,
+                                    total_requests,
+                                    started_at,
+                                )
+                                last_log_at = now
             csv_file.flush()
             _write_markdown(csv_path, md_path, metadata, benchmark_models, caps, model_contexts)
+    finally:
+        if progress_bar:
+            progress_bar.stop()
 
     return {
         "csv_path": csv_path,
         "markdown_path": md_path,
         "rows": len(rows) * len(caps) * len(benchmark_models),
     }
+
+
+def _benchmark_progress_log(
+    message: str,
+    completed: int,
+    total: int,
+    started_at: float,
+    force: bool = False,
+) -> None:
+    if not force and sys.stdout.isatty():
+        return
+    elapsed = max(time.time() - started_at, 0.001)
+    rate = completed / elapsed
+    print(
+        f"[{time.strftime('%H:%M:%S')}] {message}: {completed}/{total} ({rate:.2f}/s)",
+        flush=True,
+    )
 
 
 def _csv_row(

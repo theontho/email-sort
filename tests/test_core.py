@@ -697,10 +697,19 @@ def test_benchmark_classification_parser_options():
             "12.5",
             "--max-tokens",
             "128",
+            "--backend",
+            "opencode",
+            "--opencode-agent",
+            "summary",
+            "--opencode-provider",
+            "github-copilot",
+            "--no-progress",
+            "--redact-inputs",
         ]
     )
 
     assert args.server == "m5"
+    assert args.backend == "opencode"
     assert args.caps == [500, 1000, 4000]
     assert args.samples == 2
     assert args.models == ["model-a", "model-b"]
@@ -708,6 +717,43 @@ def test_benchmark_classification_parser_options():
     assert args.output_dir == "bench-out"
     assert args.timeout == 12.5
     assert args.max_tokens == 128
+    assert args.opencode_agent == "summary"
+    assert args.opencode_provider == "github-copilot"
+    assert args.no_progress is True
+    assert args.redact_inputs is True
+
+
+def test_benchmark_classification_opencode_defaults_without_server():
+    args = build_parser().parse_args(["benchmark-classification", "--backend", "opencode"])
+
+    assert args.server is None
+    assert args.backend == "opencode"
+    assert args.models is None
+    assert args.opencode_agent == "summary"
+
+
+def test_benchmark_models_parser_options():
+    args = build_parser().parse_args(["benchmark-models", "--backend", "opencode"])
+
+    assert args.server is None
+    assert args.backend == "opencode"
+
+
+def test_benchmark_classification_missing_server_error(monkeypatch, capsys):
+    from email_sort import cli
+
+    def fail_benchmark(**kwargs):
+        raise ValueError("No enabled server named 'm4' found. Available servers: m5")
+
+    monkeypatch.setattr("email_sort.benchmark.benchmark_classification", fail_benchmark)
+
+    args = build_parser().parse_args(["benchmark-classification", "m4"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.command_benchmark_classification(args)
+
+    assert exc.value.code == 2
+    assert "Benchmark configuration error" in capsys.readouterr().out
 
 
 def test_heuristics_uses_progress_for_interactive_runs(monkeypatch):

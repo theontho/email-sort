@@ -59,16 +59,25 @@ def _parse_str_list(value: str) -> list[str]:
 def command_benchmark_classification(args):
     from email_sort.benchmark import benchmark_classification
 
-    result = benchmark_classification(
-        server_name=args.server,
-        caps=args.caps,
-        sample_count=args.samples,
-        models=args.models,
-        output_dir=args.output_dir,
-        source=args.source,
-        timeout=args.timeout,
-        max_tokens=args.max_tokens,
+    try:
+        result = benchmark_classification(
+            server_name=args.server,
+            caps=args.caps,
+            sample_count=args.samples,
+            models=args.models,
+            output_dir=args.output_dir,
+            source=args.source,
+            timeout=args.timeout,
+            max_tokens=args.max_tokens,
+            backend=args.backend,
+        opencode_agent=args.opencode_agent,
+        opencode_provider=args.opencode_provider,
+        progress=not args.no_progress,
+        redact_inputs=args.redact_inputs,
     )
+    except ValueError as exc:
+        console.print(f"[red]Benchmark configuration error:[/red] {exc}")
+        raise SystemExit(2) from exc
     console.print(f"Benchmark CSV: [cyan]{result['csv_path']}[/cyan]")
     console.print(f"Benchmark Markdown: [cyan]{result['markdown_path']}[/cyan]")
     console.print(f"Rows: [green]{result['rows']}[/green]")
@@ -78,6 +87,35 @@ def command_detect_language(args):
     from email_sort.detect_language import detect_languages
 
     detect_languages(args.source, args.batch)
+
+
+def command_benchmark_models(args):
+    if args.backend == "openai":
+        from openai import OpenAI
+
+        from email_sort.benchmark import _available_chat_models, _server_by_name
+        from email_sort.config import get_servers, get_setting
+
+        server_name = args.server
+        if not server_name:
+            servers = [server for server in get_servers() if not server.get("disabled", False)]
+            if len(servers) != 1:
+                raise SystemExit(
+                    "server is required when zero or multiple OpenAI servers are configured"
+                )
+            server_name = servers[0]["name"]
+        server = _server_by_name(server_name)
+        client = OpenAI(
+            base_url=server["url"],
+            api_key=server.get("api_key") or get_setting("lmstudio_key", "lm-studio"),
+        )
+        models = _available_chat_models(client)
+    else:
+        from email_sort.benchmark import available_opencode_models
+
+        models = available_opencode_models(args.server)
+    for model in models:
+        console.print(model)
 
 
 def command_init_db(args):
@@ -423,9 +461,19 @@ def build_parser():
     benchmark = subparsers.add_parser(
         "benchmark-classification",
         help="Benchmark LLM classification output",
-        description="Benchmark configured OpenAI-compatible servers using the full classification prompt and real email body samples.",
+        description="Benchmark OpenAI-compatible servers or opencode models using the full classification prompt and real email body samples.",
     )
-    benchmark.add_argument("server", help="Configured server name to benchmark, such as m5")
+    benchmark.add_argument(
+        "server",
+        nargs="?",
+        help="Configured server name for openai backend or opencode provider name such as github-copilot",
+    )
+    benchmark.add_argument(
+        "--backend",
+        choices=["openai", "opencode"],
+        default="openai",
+        help="Benchmark backend to use (default: openai)",
+    )
     benchmark.add_argument(
         "--caps",
         type=_parse_int_list,
@@ -441,7 +489,26 @@ def build_parser():
     benchmark.add_argument(
         "--models",
         type=_parse_str_list,
-        help="Comma-separated model IDs to benchmark (default: all non-embedding models on server)",
+        help="Comma-separated model IDs to benchmark (default: all non-embedding models on server/provider)",
+    )
+    benchmark.add_argument(
+        "--opencode-agent",
+        default="summary",
+        help="opencode agent to use with --backend opencode (default: summary)",
+    )
+    benchmark.add_argument(
+        "--opencode-provider",
+        help="opencode provider to list when server is a label but model discovery should use a provider",
+    )
+    benchmark.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable benchmark progress bar/log output",
+    )
+    benchmark.add_argument(
+        "--redact-inputs",
+        action="store_true",
+        help="Redact emails and URLs from benchmark input excerpts in Markdown metadata",
     )
     benchmark.add_argument(
         "--source",
@@ -465,6 +532,24 @@ def build_parser():
         help="Maximum output tokens per request (default: 256)",
     )
     benchmark.set_defaults(func=command_benchmark_classification)
+
+    benchmark_models = subparsers.add_parser(
+        "benchmark-models",
+        help="List benchmarkable models",
+        description="List models available for a benchmark backend and server/provider.",
+    )
+    benchmark_models.add_argument(
+        "server",
+        nargs="?",
+        help="Configured server name for openai backend or opencode provider name such as github-copilot",
+    )
+    benchmark_models.add_argument(
+        "--backend",
+        choices=["openai", "opencode"],
+        default="openai",
+        help="Model backend to query (default: openai)",
+    )
+    benchmark_models.set_defaults(func=command_benchmark_models)
 
     lang = subparsers.add_parser(
         "detect-language",
