@@ -36,5 +36,6 @@ repos:
           - pydantic
           - requests
           - rich
+          - types-requests
         args: [--ignore-missing-imports, src]
         pass_filenames: false
