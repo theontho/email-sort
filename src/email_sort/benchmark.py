@@ -60,6 +60,7 @@ CSV_FIELDNAMES = [
 
 BACKENDS = ("openai", "opencode")
 BENCHMARK_EMAIL_EXCERPT_CHARS = 2000
+MARKDOWN_REFRESH_SECONDS = 60
 
 
 def _opencode_executable() -> str:
@@ -437,8 +438,8 @@ def benchmark_classification(
             {
                 "email_id": row["id"],
                 "email_date": row.get("date") or "",
-                "sender": row.get("sender") or "",
-                "subject": row.get("subject") or "",
+                "sender": _email_excerpt(row.get("sender") or "", redact=redact_inputs),
+                "subject": _email_excerpt(row.get("subject") or "", redact=redact_inputs),
                 "subject_chars": len(row.get("subject") or ""),
                 "snippet_chars": len(row.get("snippet") or ""),
                 "body_chars": len(row.get("body_text") or ""),
@@ -456,6 +457,16 @@ def benchmark_classification(
             writer = csv.DictWriter(csv_file, fieldnames=CSV_FIELDNAMES)
             writer.writeheader()
             csv_file.flush()
+            last_markdown_at = time.time()
+
+            def refresh_markdown(force: bool = False) -> None:
+                nonlocal last_markdown_at
+                now = time.time()
+                if not force and now - last_markdown_at < MARKDOWN_REFRESH_SECONDS:
+                    return
+                csv_file.flush()
+                _write_markdown(csv_path, md_path, metadata, benchmark_models, caps, model_contexts)
+                last_markdown_at = now
 
             for model in benchmark_models:
                 if progress and not use_progress_bar:
@@ -511,10 +522,7 @@ def benchmark_classification(
                                     error=warm_error,
                                 )
                             )
-                    csv_file.flush()
-                    _write_markdown(
-                        csv_path, md_path, metadata, benchmark_models, caps, model_contexts
-                    )
+                    refresh_markdown()
                     completed_requests += len(rows) * len(caps)
                     if progress_bar and progress_task is not None:
                         progress_bar.update(progress_task, advance=len(rows) * len(caps))
@@ -597,9 +605,7 @@ def benchmark_classification(
                             )
                         )
                         csv_file.flush()
-                        _write_markdown(
-                            csv_path, md_path, metadata, benchmark_models, caps, model_contexts
-                        )
+                        refresh_markdown()
                         completed_requests += 1
                         if progress_bar and progress_task is not None:
                             progress_bar.update(
@@ -617,8 +623,7 @@ def benchmark_classification(
                                     started_at,
                                 )
                                 last_log_at = now
-            csv_file.flush()
-            _write_markdown(csv_path, md_path, metadata, benchmark_models, caps, model_contexts)
+            refresh_markdown(force=True)
     finally:
         if progress_bar:
             progress_bar.stop()
