@@ -37,6 +37,43 @@ def command_classify(args):
     classify_emails(args.limit, args.source, args.window, args.reclassify)
 
 
+def _parse_int_list(value: str) -> list[int]:
+    try:
+        items = [int(item.strip()) for item in value.split(",") if item.strip()]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected comma-separated integers") from exc
+    if not items:
+        raise argparse.ArgumentTypeError("expected at least one integer")
+    if any(item <= 0 for item in items):
+        raise argparse.ArgumentTypeError("all integers must be positive")
+    return items
+
+
+def _parse_str_list(value: str) -> list[str]:
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    if not items:
+        raise argparse.ArgumentTypeError("expected at least one value")
+    return items
+
+
+def command_benchmark_classification(args):
+    from email_sort.benchmark import benchmark_classification
+
+    result = benchmark_classification(
+        server_name=args.server,
+        caps=args.caps,
+        sample_count=args.samples,
+        models=args.models,
+        output_dir=args.output_dir,
+        source=args.source,
+        timeout=args.timeout,
+        max_tokens=args.max_tokens,
+    )
+    console.print(f"Benchmark CSV: [cyan]{result['csv_path']}[/cyan]")
+    console.print(f"Benchmark Markdown: [cyan]{result['markdown_path']}[/cyan]")
+    console.print(f"Rows: [green]{result['rows']}[/green]")
+
+
 def command_detect_language(args):
     from email_sort.detect_language import detect_languages
 
@@ -382,6 +419,52 @@ def build_parser():
         help="Clear existing classifications first; use 'all' or comma-separated categories",
     )
     classify.set_defaults(func=command_classify)
+
+    benchmark = subparsers.add_parser(
+        "benchmark-classification",
+        help="Benchmark LLM classification output",
+        description="Benchmark configured OpenAI-compatible servers using the full classification prompt and real email body samples.",
+    )
+    benchmark.add_argument("server", help="Configured server name to benchmark, such as m5")
+    benchmark.add_argument(
+        "--caps",
+        type=_parse_int_list,
+        default=[500, 1000, 2000, 4000, 8000, 12000],
+        help="Comma-separated body character caps (default: 500,1000,2000,4000,8000,12000)",
+    )
+    benchmark.add_argument(
+        "--samples",
+        type=int,
+        default=3,
+        help="Number of real emails to benchmark (default: 3)",
+    )
+    benchmark.add_argument(
+        "--models",
+        type=_parse_str_list,
+        help="Comma-separated model IDs to benchmark (default: all non-embedding models on server)",
+    )
+    benchmark.add_argument(
+        "--source",
+        help="Only sample emails from this source",
+    )
+    benchmark.add_argument(
+        "--output-dir",
+        default="out",
+        help="Directory for CSV and Markdown artifacts (default: out)",
+    )
+    benchmark.add_argument(
+        "--timeout",
+        type=float,
+        default=300.0,
+        help="Per-request timeout in seconds (default: 300)",
+    )
+    benchmark.add_argument(
+        "--max-tokens",
+        type=int,
+        default=256,
+        help="Maximum output tokens per request (default: 256)",
+    )
+    benchmark.set_defaults(func=command_benchmark_classification)
 
     lang = subparsers.add_parser(
         "detect-language",

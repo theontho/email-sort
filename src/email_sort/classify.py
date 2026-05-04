@@ -109,7 +109,7 @@ def update_status(email_id, msg, is_finished=False):
 
 def _grid(rows: list[str], empty_message: str) -> Table:
     table = Table.grid(expand=True)
-    table.add_column(no_wrap=True)
+    table.add_column(no_wrap=True, overflow="ellipsis")
     if not rows:
         table.add_row(f"[dim]{empty_message}[/dim]")
         return table
@@ -180,8 +180,8 @@ NORMALIZED_CATEGORIES = {value.lower(): value for value in VALID_CATEGORIES}
 NORMALIZED_ACTIONS = {value.lower(): value for value in VALID_ACTIONS}
 
 
-def parse_classification(content: str) -> tuple[str, float, str, str]:
-    category, confidence, suggested_category, action = "Other", 0.0, "", ""
+def parse_classification(content: str) -> tuple[str, float, str, str, str]:
+    category, confidence, suggested_category, summary, action = "Other", 0.0, "", "", ""
     for line in reversed([line.strip() for line in content.splitlines() if line.strip()]):
         clean_content = line.replace("`", "").replace("'", "").replace('"', "").strip()
         parts = [p.strip() for p in clean_content.split(",")]
@@ -192,7 +192,8 @@ def parse_classification(content: str) -> tuple[str, float, str, str]:
             candidate_confidence = float(parts[1])
         except ValueError, IndexError:
             continue
-        candidate_action = parts[3] if len(parts) >= 4 else ""
+        candidate_summary = parts[3] if len(parts) >= 4 else ""
+        candidate_action = parts[4] if len(parts) >= 5 else ""
         if candidate_category not in VALID_CATEGORIES:
             continue
         if candidate_action:
@@ -201,16 +202,17 @@ def parse_classification(content: str) -> tuple[str, float, str, str]:
             candidate_category,
             candidate_confidence,
             parts[2] if len(parts) >= 3 else "",
+            candidate_summary,
             candidate_action,
         )
-    return category, confidence, suggested_category, action
+    return category, confidence, suggested_category, summary, action
 
 
 def _write_batch(cursor, updates: list[tuple]) -> None:
     cursor.executemany(
         f"""
         UPDATE {EMAIL_TABLE}
-        SET category = ?, confidence = ?, suggested_category = ?, action = ?,
+        SET category = ?, confidence = ?, suggested_category = ?, summary = ?, action = ?,
             classify_model = ?, classify_time = ?
         WHERE id = ?
         """,
@@ -249,10 +251,12 @@ def classify_single_email(worker_pool, result_queue, row):
 
     email_id = row["id"]
     sender = row["sender"]
+    email_date = row.get("date") or "unknown date"
     subject = row["subject"] or ""
-    snippet = (row["snippet"] or "")[:2000]
+    body_cap = int(get_setting("classification_body_chars", 4000))
+    body = (row.get("body_text") or row.get("snippet") or "")[:body_cap]
 
-    prompt_body = f"Sender: {sender}\nSubject: {subject}\nSnippet: {snippet}"
+    prompt_body = f"Sender: {sender}\nSubject: {subject}\nDate: {email_date}\nBody:\n{body}"
 
     # Get a client from the pool
     client_info = worker_pool.get()
@@ -271,11 +275,11 @@ def classify_single_email(worker_pool, result_queue, row):
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a highly efficient email classifier. Output ONLY four items, comma separated: category, confidence, suggested_category, action.\n"
+                    "content": "You are a highly efficient email classifier. Output ONLY five items, comma separated: category, confidence, suggested_category, summary, action.\n"
                     "Categories: Finance, Health, Work, Newsletter, Promotional, Social, Home, Education, Tech, Shopping, Travel, Security, Shipping, Personal, Spam, Other.\n"
                     "Action (Message Type): Authentication, Mandatory, Informational, Newsletter, Promotional, Social, Personal.\n"
-                    "Example: 'Security, 0.98, Password Reset, Authentication'.\n"
-                    "DO NOT include any other text. suggested_category should be 2-4 words.",
+                    "Example: 'Security, 0.98, Password Reset, Account password reset link, Authentication'.\n"
+                    "DO NOT include any other text. suggested_category should be 2-4 words. summary should be a short plain-language email summary. Do not use commas inside any field.",
                 },
                 {"role": "user", "content": prompt_body},
             ],
@@ -293,7 +297,7 @@ def classify_single_email(worker_pool, result_queue, row):
         if not content:
             content = (getattr(message, "reasoning_content", None) or "").strip()
 
-        category, confidence, suggested_category, action = parse_classification(content)
+        category, confidence, suggested_category, summary, action = parse_classification(content)
 
         duration = time.time() - start_time
 
@@ -302,6 +306,7 @@ def classify_single_email(worker_pool, result_queue, row):
                 category,
                 confidence,
                 suggested_category,
+                summary,
                 action,
                 f"{model_name}@{server_name}",
                 duration,
@@ -311,7 +316,7 @@ def classify_single_email(worker_pool, result_queue, row):
 
         update_status(
             email_id,
-            f"[green]✓[/green] [dim]ID {email_id}:[/dim] [bold]{category}[/bold] ({confidence}) | [yellow]{action}[/yellow] [dim]({duration:.1f}s on {server_name})[/dim]",
+            f"[green]✓[/green] [dim]ID {email_id}:[/dim] [dim]{email_date}[/dim] | [bold]{category}[/bold] ({confidence}) | [yellow]{suggested_category}[/yellow] | [cyan]{action}[/cyan] [dim]({duration:.1f}s on {server_name})[/dim] | {summary}",
             is_finished=True,
         )
 
@@ -347,7 +352,7 @@ def classify_emails(limit=None, source=None, window=100, reclassify=None):
         c.execute(
             f"""
             UPDATE {EMAIL_TABLE}
-            SET category = NULL, action = NULL, suggested_category = NULL,
+            SET category = NULL, action = NULL, suggested_category = NULL, summary = NULL,
                 confidence = NULL, classify_model = NULL, classify_time = NULL
             WHERE (? IS NULL OR source = ?)
             """,
@@ -361,7 +366,7 @@ def classify_emails(limit=None, source=None, window=100, reclassify=None):
         c.execute(
             f"""
             UPDATE {EMAIL_TABLE}
-            SET category = NULL, action = NULL, suggested_category = NULL,
+            SET category = NULL, action = NULL, suggested_category = NULL, summary = NULL,
                 confidence = NULL, classify_model = NULL, classify_time = NULL
             WHERE category IN ({placeholders}) AND (? IS NULL OR source = ?)
             """,
@@ -376,11 +381,11 @@ def classify_emails(limit=None, source=None, window=100, reclassify=None):
     )
 
     query = f"""
-        SELECT id, sender, subject, snippet
+        SELECT id, sender, date, subject, snippet, body_text
         FROM {EMAIL_TABLE}
-        WHERE (category IS NULL OR category = '')
-        AND (rule_category IS NULL OR rule_category = '')
-        AND (heuristic_category IS NULL OR heuristic_category = '')
+        WHERE COALESCE(category, '') = ''
+        AND COALESCE(rule_category, '') = ''
+        AND COALESCE(heuristic_category, '') = ''
         AND language = 'en'
         AND is_not_for_me = 0
         AND (dmarc_fail = 0 OR dmarc_arc_override = 1)

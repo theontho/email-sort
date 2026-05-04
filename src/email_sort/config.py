@@ -17,7 +17,8 @@ class ConfigLoadError(RuntimeError):
 class GeneralConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    model_name: str = "qwen/qwen3.5-9b"
+    model_name: str = "qwen/qwen3.6-35b-a3b"
+    classification_body_chars: int = 4000
     lmstudio_key: str = "lm-studio"
     fastmail_token: str | None = None
     my_domains: list[str] = Field(default_factory=list)
