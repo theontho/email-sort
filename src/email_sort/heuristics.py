@@ -59,7 +59,8 @@ def _text_matches(text: str, patterns: tuple[str, ...]) -> bool:
 def _notification_match(
     sender: str,
     sender_domain: str,
-    text: str,
+    subject_text: str,
+    snippet_text: str,
     category: str,
     action: str,
     confidence: float,
@@ -67,14 +68,22 @@ def _notification_match(
     patterns: tuple[str, ...],
     domains: tuple[str, ...] = (),
     senders: tuple[str, ...] = (),
+    domain_identity_enough: bool = False,
+    sender_identity_enough: bool = False,
     identity_enough: bool = False,
 ) -> tuple[str, str, float, dict] | None:
+    domain_identity_enough = domain_identity_enough or identity_enough
+    sender_identity_enough = sender_identity_enough or identity_enough
     domain_hit = sender_domain in domains or any(
         sender_domain.endswith(f".{domain}") for domain in domains
     )
     sender_hit = any(token in sender for token in senders)
-    text_hit = _text_matches(text, patterns)
-    if not text_hit and not (identity_enough and (domain_hit or sender_hit)):
+    subject_hit = _text_matches(subject_text, patterns)
+    snippet_hit = (domain_hit or sender_hit) and _text_matches(snippet_text, patterns)
+    text_hit = subject_hit or snippet_hit
+    if not text_hit and not (
+        (domain_identity_enough and domain_hit) or (sender_identity_enough and sender_hit)
+    ):
         return None
 
     evidence = {}
@@ -82,8 +91,10 @@ def _notification_match(
         evidence[f"{name}_domain"] = sender_domain
     if sender_hit:
         evidence[f"{name}_sender"] = sender
-    if text_hit:
-        evidence[f"{name}_text"] = text[:160]
+    if subject_hit:
+        evidence[f"{name}_subject"] = subject_text[:160]
+    elif snippet_hit:
+        evidence[f"{name}_snippet"] = snippet_text[:160]
     return category, action, confidence, evidence
 
 
@@ -96,12 +107,14 @@ def _deterministic_notification_classification(
 ) -> tuple[str, str, float, dict] | None:
     sender_l = (sender or "").lower()
     domain_l = (sender_domain or "").lower()
-    text = " ".join([sender_l, domain_l, subject or "", snippet or ""]).lower()
+    subject_l = (subject or "").lower()
+    snippet_l = (snippet or "").lower()
 
     security = _notification_match(
         sender_l,
         domain_l,
-        text,
+        subject_l,
+        snippet_l,
         "Security",
         "Authentication",
         0.96,
@@ -121,13 +134,14 @@ def _deterministic_notification_classification(
     shipping = _notification_match(
         sender_l,
         domain_l,
-        text,
+        subject_l,
+        snippet_l,
         "Shipping",
         "Informational",
         0.95,
         "shipping_notification",
         (
-            r"\b(package|shipment|tracking|track your|delivery|delivered|out for delivery)\b",
+            r"\b(package|shipment|tracking|track your|delivered|out for delivery)\b",
             r"\b(expected delivery|scheduled delivery|order has shipped|shipping label)\b",
             r"\b(ups|usps|fedex|dhl)\b",
         ),
@@ -141,7 +155,8 @@ def _deterministic_notification_classification(
     finance_mandatory = _notification_match(
         sender_l,
         domain_l,
-        text,
+        subject_l,
+        snippet_l,
         "Finance",
         "Mandatory",
         0.95,
@@ -168,7 +183,8 @@ def _deterministic_notification_classification(
     finance_receipt = _notification_match(
         sender_l,
         domain_l,
-        text,
+        subject_l,
+        snippet_l,
         "Finance",
         "Informational",
         0.92,
@@ -186,7 +202,8 @@ def _deterministic_notification_classification(
     marketplace = _notification_match(
         sender_l,
         domain_l,
-        text,
+        subject_l,
+        snippet_l,
         "Shopping",
         "Informational",
         0.9,
@@ -206,7 +223,8 @@ def _deterministic_notification_classification(
     social = _notification_match(
         sender_l,
         domain_l,
-        text,
+        subject_l,
+        snippet_l,
         "Social",
         "Social",
         0.9,
@@ -217,7 +235,7 @@ def _deterministic_notification_classification(
         ),
         domains=("facebookmail.com", "linkedin.com", "twitter.com", "x.com", "instagram.com", "meetup.com"),
         senders=("confirm+", "eventmaster", "wallmaster"),
-        identity_enough=True,
+        sender_identity_enough=True,
     )
     if social:
         return social
@@ -225,7 +243,8 @@ def _deterministic_notification_classification(
     calendar = _notification_match(
         sender_l,
         domain_l,
-        text,
+        subject_l,
+        snippet_l,
         "Personal",
         "Mandatory",
         0.88,
@@ -523,6 +542,20 @@ def run_heuristics(recompute: bool = False):
             mode = "all" if recompute else "new or unprocessed"
             print(f"Running heuristics on {len(rows)} {mode} emails in {table_name}...")
 
+            update_sql = (
+                f"UPDATE {table_name} SET language=?, is_not_for_me=?, "
+                "heuristic_category=?, heuristic_action=?, heuristic_confidence=?, "
+                "body_unsubscribe_links=?, heuristic_matches=?, dmarc_arc_override=?, "
+                "heuristic_processed_at=CURRENT_TIMESTAMP WHERE id=?"
+                if recompute
+                else f"UPDATE {table_name} SET language=?, is_not_for_me=?, "
+                "heuristic_category=COALESCE(heuristic_category, ?), "
+                "heuristic_action=COALESCE(heuristic_action, ?), "
+                "heuristic_confidence=COALESCE(heuristic_confidence, ?), "
+                "body_unsubscribe_links=?, heuristic_matches=?, dmarc_arc_override=?, "
+                "heuristic_processed_at=CURRENT_TIMESTAMP WHERE id=?"
+            )
+
             updates = []
             my_domains = get_setting("my_domains", ["icloud.com", "appleid.com", "gmail.com"])
             progress = make_progress() if rows and is_interactive else None
@@ -685,10 +718,7 @@ def run_heuristics(recompute: bool = False):
                     )
 
                     if len(updates) >= 1000:
-                        c.executemany(
-                            f"UPDATE {table_name} SET language=?, is_not_for_me=?, heuristic_category=COALESCE(heuristic_category, ?), heuristic_action=COALESCE(heuristic_action, ?), heuristic_confidence=COALESCE(heuristic_confidence, ?), body_unsubscribe_links=?, heuristic_matches=?, dmarc_arc_override=?, heuristic_processed_at=CURRENT_TIMESTAMP WHERE id=?",
-                            updates,
-                        )
+                        c.executemany(update_sql, updates)
                         conn.commit()
                         updates = []
                     if progress and task is not None:
@@ -706,10 +736,7 @@ def run_heuristics(recompute: bool = False):
                     progress.stop()
 
             if updates:
-                c.executemany(
-                    f"UPDATE {table_name} SET language=?, is_not_for_me=?, heuristic_category=COALESCE(heuristic_category, ?), heuristic_action=COALESCE(heuristic_action, ?), heuristic_confidence=COALESCE(heuristic_confidence, ?), body_unsubscribe_links=?, heuristic_matches=?, dmarc_arc_override=?, heuristic_processed_at=CURRENT_TIMESTAMP WHERE id=?",
-                    updates,
-                )
+                c.executemany(update_sql, updates)
                 conn.commit()
 
             print(f"Detecting duplicates and digests in {table_name}...")

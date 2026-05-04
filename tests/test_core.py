@@ -1050,6 +1050,108 @@ def test_heuristics_classify_obvious_notifications(monkeypatch):
         conn.close()
 
 
+def test_heuristics_recompute_replaces_existing_heuristic_category(monkeypatch):
+    from email_sort import heuristics
+
+    class FakeModel:
+        def predict(self, text):
+            return (["__label__en"], [0.99])
+
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        create_email_table(cursor)
+        cursor.execute(
+            f"""
+            INSERT INTO {EMAIL_TABLE} (
+                source, provider_id, sender, sender_domain, subject, snippet,
+                to_address, headers, body_html, dmarc_fail, has_arc,
+                arc_auth_results, heuristic_category, heuristic_action,
+                heuristic_confidence, heuristic_processed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "test",
+                "shipping-recompute",
+                "trackingupdates@fedex.com",
+                "fedex.com",
+                "FedEx Shipment 123 Delivered",
+                "Your package was delivered",
+                "me@example.com",
+                '{"List-Id": "marketing.fedex.com"}',
+                "",
+                0,
+                0,
+                "",
+                "Newsletter",
+                "Informational",
+                1.0,
+                "2026-01-01 00:00:00",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.setattr(heuristics, "download_model", lambda: None)
+    monkeypatch.setattr(heuristics.fasttext, "load_model", lambda path: FakeModel())
+    monkeypatch.setattr(heuristics.sys.stdout, "isatty", lambda: False)
+    monkeypatch.setattr(heuristics, "get_setting", lambda key, default=None: ["example.com"] if key == "my_domains" else default)
+
+    heuristics.run_heuristics(recompute=True)
+
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT heuristic_category FROM {EMAIL_TABLE} WHERE provider_id = ?",
+            ("shipping-recompute",),
+        )
+        assert cursor.fetchone()["heuristic_category"] == "Shipping"
+    finally:
+        conn.close()
+
+
+def test_social_heuristic_does_not_match_instagram_domain_alone():
+    from email_sort.heuristics import _deterministic_notification_classification
+
+    assert (
+        _deterministic_notification_classification(
+            "security@mail.instagram.com",
+            "mail.instagram.com",
+            "Password reset",
+            "Reset your password",
+            {},
+        )[0]
+        == "Security"
+    )
+
+
+def test_notification_heuristics_ignore_generic_snippet_keywords():
+    from email_sort.heuristics import _deterministic_notification_classification
+
+    assert (
+        _deterministic_notification_classification(
+            "news@abebooks.com",
+            "abebooks.com",
+            "Find Textbooks You Need",
+            "Free shipping on books this week",
+            {},
+        )
+        is None
+    )
+    assert (
+        _deterministic_notification_classification(
+            "editorialstaff@flipboard.com",
+            "flipboard.com",
+            "10 for Today",
+            "Read the article using this verification-free link",
+            {},
+        )
+        is None
+    )
+
+
 def test_heuristics_rolls_back_current_batch_on_interrupt(monkeypatch):
     from email_sort import heuristics
 
