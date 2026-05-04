@@ -220,8 +220,23 @@ def _write_batch(cursor, updates: list[tuple]) -> None:
     )
 
 
+def _format_duration(seconds: float) -> str:
+    total_seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes}m{seconds}s"
+    if minutes:
+        return f"{minutes}m{seconds}s"
+    return f"{seconds}s"
+
+
 def classification_writer(
-    result_queue: queue.Queue, pbar, pbar_task, batch_size: int = 100
+    result_queue: queue.Queue,
+    pbar,
+    pbar_task,
+    batch_size: int = 100,
+    stats: dict[str, int] | None = None,
 ) -> None:
     conn = get_db()
     pending: list[tuple] = []
@@ -237,10 +252,14 @@ def classification_writer(
             if len(pending) >= batch_size:
                 _write_batch(cursor, pending)
                 conn.commit()
+                if stats is not None:
+                    stats["classified"] = stats.get("classified", 0) + len(pending)
                 pending.clear()
         if pending:
             _write_batch(cursor, pending)
             conn.commit()
+            if stats is not None:
+                stats["classified"] = stats.get("classified", 0) + len(pending)
     finally:
         conn.close()
 
@@ -334,6 +353,7 @@ def classify_emails(limit=None, source=None, window=100, reclassify=None):
     from email_sort.db import init_db
 
     print("Starting classification... (can take a while)", flush=True)
+    started_at = time.time()
     init_db()
     global finished_tasks
     finished_tasks = collections.deque(maxlen=window)
@@ -403,6 +423,8 @@ def classify_emails(limit=None, source=None, window=100, reclassify=None):
 
     if not all_rows:
         print("No emails to classify.")
+        elapsed = _format_duration(time.time() - started_at)
+        print(f"classification complete (classified 0 emails in {elapsed})", flush=True)
         return
 
     worker_pool, total_workers = get_worker_pool()
@@ -427,11 +449,12 @@ def classify_emails(limit=None, source=None, window=100, reclassify=None):
     layout["log"].update(LogDisplay())
 
     try:
+        writer_stats = {"classified": 0}
         with Live(layout, refresh_per_second=4, console=console, screen=True):
             result_queue: queue.Queue = queue.Queue()
             writer = threading.Thread(
                 target=classification_writer,
-                args=(result_queue, progress, pbar_task),
+                args=(result_queue, progress, pbar_task, 100, writer_stats),
                 daemon=True,
             )
             writer.start()
@@ -449,6 +472,12 @@ def classify_emails(limit=None, source=None, window=100, reclassify=None):
                 executor.shutdown(wait=True)
             result_queue.put(None)
             writer.join()
+        elapsed = _format_duration(time.time() - started_at)
+        message = (
+            f"classification complete (classified {writer_stats['classified']} emails in {elapsed})"
+        )
+        add_log(message)
+        print(message, flush=True)
     except KeyboardInterrupt:
         stop_event.set()
         print("\nStopping classification...")

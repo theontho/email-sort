@@ -19,6 +19,256 @@ from email_sort.progress import make_progress
 MODEL_URL = "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin"
 # Path relative to centralized config directory
 MODEL_PATH = get_config_dir() / "models" / "lid.176.bin"
+DEFAULT_MY_DOMAINS = ["icloud.com", "appleid.com", "gmail.com"]
+
+
+def _normalize_domains(values) -> tuple[set[str], set[str]]:
+    addresses: set[str] = set()
+    domains: set[str] = set()
+    for value in values or []:
+        item = str(value).strip().lower()
+        if not item:
+            continue
+        if "@" in item:
+            addresses.add(item)
+            domains.add(item.rsplit("@", 1)[1])
+        else:
+            domains.add(item.lstrip("@"))
+    return addresses, domains
+
+
+def _domain_matches(domain: str, targets: set[str]) -> bool:
+    return any(domain == target or domain.endswith(f".{target}") for target in targets)
+
+
+def _addresses_match_domains(
+    values: list[str], target_addresses: set[str], target_domains: set[str]
+) -> bool:
+    for _, address in email.utils.getaddresses(values):
+        address = address.lower()
+        if not address or "@" not in address:
+            continue
+        domain = address.rsplit("@", 1)[1]
+        if address in target_addresses or _domain_matches(domain, target_domains):
+            return True
+    return False
+
+
+def _text_matches(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(re.search(pattern, text, re.I) for pattern in patterns)
+
+
+def _notification_match(
+    sender: str,
+    sender_domain: str,
+    subject_text: str,
+    snippet_text: str,
+    category: str,
+    action: str,
+    confidence: float,
+    name: str,
+    patterns: tuple[str, ...],
+    domains: tuple[str, ...] = (),
+    senders: tuple[str, ...] = (),
+    domain_identity_enough: bool = False,
+    sender_identity_enough: bool = False,
+    identity_enough: bool = False,
+) -> tuple[str, str, float, dict] | None:
+    domain_identity_enough = domain_identity_enough or identity_enough
+    sender_identity_enough = sender_identity_enough or identity_enough
+    domain_hit = sender_domain in domains or any(
+        sender_domain.endswith(f".{domain}") for domain in domains
+    )
+    sender_hit = any(token in sender for token in senders)
+    subject_hit = _text_matches(subject_text, patterns)
+    snippet_hit = (domain_hit or sender_hit) and _text_matches(snippet_text, patterns)
+    text_hit = subject_hit or snippet_hit
+    if not text_hit and not (
+        (domain_identity_enough and domain_hit) or (sender_identity_enough and sender_hit)
+    ):
+        return None
+
+    evidence = {}
+    if domain_hit:
+        evidence[f"{name}_domain"] = sender_domain
+    if sender_hit:
+        evidence[f"{name}_sender"] = sender
+    if subject_hit:
+        evidence[f"{name}_subject"] = subject_text[:160]
+    elif snippet_hit:
+        evidence[f"{name}_snippet"] = snippet_text[:160]
+    return category, action, confidence, evidence
+
+
+def _deterministic_notification_classification(
+    sender: str,
+    sender_domain: str,
+    subject: str,
+    snippet: str,
+    headers: dict,
+) -> tuple[str, str, float, dict] | None:
+    sender_l = (sender or "").lower()
+    domain_l = (sender_domain or "").lower()
+    subject_l = (subject or "").lower()
+    snippet_l = (snippet or "").lower()
+
+    security = _notification_match(
+        sender_l,
+        domain_l,
+        subject_l,
+        snippet_l,
+        "Security",
+        "Authentication",
+        0.96,
+        "security_notification",
+        (
+            r"\b(two[- ]?factor|2fa|mfa|verification code|security code|one[- ]?time code|otp)\b",
+            r"\b(password reset|reset your password|verify your email|confirm your email)\b",
+            r"\b(new sign[- ]?in|new login|login attempt|suspicious activity)\b",
+            r"\b(account locked|account access|security alert)\b",
+        ),
+        domains=("accounts.google.com", "appleid.apple.com", "github.com", "facebookmail.com"),
+        senders=("security", "no-reply@accounts", "account-security"),
+    )
+    if security:
+        return security
+
+    shipping = _notification_match(
+        sender_l,
+        domain_l,
+        subject_l,
+        snippet_l,
+        "Shipping",
+        "Informational",
+        0.95,
+        "shipping_notification",
+        (
+            r"\b(package|shipment|tracking|track your|delivered|out for delivery)\b",
+            r"\b(expected delivery|scheduled delivery|order has shipped|shipping label)\b",
+            r"\b(ups|usps|fedex|dhl)\b",
+        ),
+        domains=("ups.com", "usps.com", "fedex.com", "dhl.com"),
+        senders=("tracking", "shipment", "delivery"),
+        identity_enough=True,
+    )
+    if shipping:
+        return shipping
+
+    finance_mandatory = _notification_match(
+        sender_l,
+        domain_l,
+        subject_l,
+        snippet_l,
+        "Finance",
+        "Mandatory",
+        0.95,
+        "finance_mandatory_notification",
+        (
+            r"\b(payment is due|payment due|statement available|bill is ready|minimum payment)\b",
+            r"\b(account ending|transaction alert|fraud alert|card declined|deposit received)\b",
+            r"\b(tax document|1099|invoice overdue)\b",
+        ),
+        domains=(
+            "chase.com",
+            "paypal.com",
+            "citi.com",
+            "americanexpress.com",
+            "bankofamerica.com",
+            "wellsfargo.com",
+            "interactivebrokers.com",
+        ),
+        senders=("alerts@", "statement", "billing", "donotreply@interactivebrokers"),
+    )
+    if finance_mandatory:
+        return finance_mandatory
+
+    finance_receipt = _notification_match(
+        sender_l,
+        domain_l,
+        subject_l,
+        snippet_l,
+        "Finance",
+        "Informational",
+        0.92,
+        "finance_receipt_notification",
+        (
+            r"\b(receipt|you sent a payment|payment received|payment confirmation)\b",
+            r"\b(order confirmation|purchase confirmation|transaction receipt)\b",
+        ),
+        domains=("paypal.com", "stripe.com", "squareup.com"),
+        senders=("receipt", "billing", "payments"),
+    )
+    if finance_receipt:
+        return finance_receipt
+
+    marketplace = _notification_match(
+        sender_l,
+        domain_l,
+        subject_l,
+        snippet_l,
+        "Shopping",
+        "Informational",
+        0.9,
+        "marketplace_notification",
+        (
+            r"\b(marketplace|buyer message|seller message|new message from|offer received)\b",
+            r"\b(item sold|item shipped|order update|your order|purchase update)\b",
+            r"\b(auction|bid|outbid|listing|craigslist)\b",
+        ),
+        domains=("amazon.com", "amazon.ca", "ebay.com", "ebay.ca", "etsy.com", "craigslist.org"),
+        senders=("marketplace", "endofitem", "reply@craigslist", "orders@"),
+        identity_enough=True,
+    )
+    if marketplace:
+        return marketplace
+
+    social = _notification_match(
+        sender_l,
+        domain_l,
+        subject_l,
+        snippet_l,
+        "Social",
+        "Social",
+        0.9,
+        "social_notification",
+        (
+            r"\b(friend request|tagged you|mentioned you|commented on|liked your|sent you a message)\b",
+            r"\b(new follower|connection request|invited you|event invitation)\b",
+        ),
+        domains=(
+            "facebookmail.com",
+            "linkedin.com",
+            "twitter.com",
+            "x.com",
+            "instagram.com",
+            "meetup.com",
+        ),
+        senders=("confirm+", "eventmaster", "wallmaster"),
+        sender_identity_enough=True,
+    )
+    if social:
+        return social
+
+    calendar = _notification_match(
+        sender_l,
+        domain_l,
+        subject_l,
+        snippet_l,
+        "Personal",
+        "Mandatory",
+        0.88,
+        "calendar_notification",
+        (
+            r"\b(calendar invitation|invitation:|updated invitation|event reminder|appointment reminder)\b",
+            r"\b(meeting invitation|accepted:|declined:|tentative:)\b",
+        ),
+        domains=("calendar.google.com", "google.com", "icloud.com", "outlook.com"),
+        senders=("calendar", "invitation"),
+    )
+    if calendar:
+        return calendar
+
+    return None
 
 
 def download_model():
@@ -289,8 +539,9 @@ def run_heuristics(recompute: bool = False):
             where_clause = "" if recompute else "WHERE heuristic_processed_at IS NULL"
             c.execute(
                 f"""
-                SELECT id, subject, snippet, to_address, headers, body_html,
-                       dmarc_fail, has_arc, arc_auth_results
+                SELECT id, sender, sender_domain, subject, snippet, to_address,
+                       delivered_to, headers, body_html, dmarc_fail, has_arc,
+                       arc_auth_results
                 FROM {table_name}
                 {where_clause}
                 """
@@ -300,8 +551,23 @@ def run_heuristics(recompute: bool = False):
             mode = "all" if recompute else "new or unprocessed"
             print(f"Running heuristics on {len(rows)} {mode} emails in {table_name}...")
 
+            update_sql = (
+                f"UPDATE {table_name} SET language=?, is_not_for_me=?, "
+                "heuristic_category=?, heuristic_action=?, heuristic_confidence=?, "
+                "body_unsubscribe_links=?, heuristic_matches=?, dmarc_arc_override=?, "
+                "heuristic_processed_at=CURRENT_TIMESTAMP WHERE id=?"
+                if recompute
+                else f"UPDATE {table_name} SET language=?, is_not_for_me=?, "
+                "heuristic_category=COALESCE(heuristic_category, ?), "
+                "heuristic_action=COALESCE(heuristic_action, ?), "
+                "heuristic_confidence=COALESCE(heuristic_confidence, ?), "
+                "body_unsubscribe_links=?, heuristic_matches=?, dmarc_arc_override=?, "
+                "heuristic_processed_at=CURRENT_TIMESTAMP WHERE id=?"
+            )
+
             updates = []
-            my_domains = get_setting("my_domains", ["icloud.com", "appleid.com", "gmail.com"])
+            my_domains = get_setting("my_domains") or DEFAULT_MY_DOMAINS
+            my_addresses, my_domain_names = _normalize_domains(my_domains)
             progress = make_progress() if rows and is_interactive else None
             if progress:
                 progress.start()
@@ -315,9 +581,12 @@ def run_heuristics(recompute: bool = False):
                 last_update = started_at
                 for index, row in enumerate(rows, start=1):
                     email_id = row["id"]
+                    sender = row["sender"] or ""
+                    sender_domain = row["sender_domain"] or ""
                     subject = row["subject"] or ""
                     snippet = row["snippet"] or ""
                     to_address = row["to_address"] or ""
+                    delivered_to = row["delivered_to"] or ""
                     headers_raw = row["headers"]
                     body_html = row["body_html"] or ""
                     arc_auth_results = (row["arc_auth_results"] or "").lower()
@@ -361,8 +630,9 @@ def run_heuristics(recompute: bool = False):
                             pass
 
                     is_not_for_me = 0
-                    to_addr_lower = to_address.lower()
-                    if not any(domain in to_addr_lower for domain in my_domains):
+                    if not _addresses_match_domains(
+                        [to_address, delivered_to], my_addresses, my_domain_names
+                    ):
                         is_not_for_me = 1
 
                     category = None
@@ -383,7 +653,14 @@ def run_heuristics(recompute: bool = False):
                     feedback_id = get_header("Feedback-ID")
                     x_mailer = get_header("X-Mailer").lower()
 
-                    if list_id:
+                    deterministic = _deterministic_notification_classification(
+                        sender, sender_domain, subject, snippet, headers
+                    )
+                    if deterministic:
+                        category, action, confidence, matches = deterministic
+                        heuristic_matches.update(matches)
+
+                    if list_id and not category:
                         category = "Newsletter"
                         action = "Informational"
                         confidence = 1.0
@@ -453,10 +730,7 @@ def run_heuristics(recompute: bool = False):
                     )
 
                     if len(updates) >= 1000:
-                        c.executemany(
-                            f"UPDATE {table_name} SET language=?, is_not_for_me=?, heuristic_category=COALESCE(heuristic_category, ?), heuristic_action=COALESCE(heuristic_action, ?), heuristic_confidence=COALESCE(heuristic_confidence, ?), body_unsubscribe_links=?, heuristic_matches=?, dmarc_arc_override=?, heuristic_processed_at=CURRENT_TIMESTAMP WHERE id=?",
-                            updates,
-                        )
+                        c.executemany(update_sql, updates)
                         conn.commit()
                         updates = []
                     if progress and task is not None:
@@ -474,10 +748,7 @@ def run_heuristics(recompute: bool = False):
                     progress.stop()
 
             if updates:
-                c.executemany(
-                    f"UPDATE {table_name} SET language=?, is_not_for_me=?, heuristic_category=COALESCE(heuristic_category, ?), heuristic_action=COALESCE(heuristic_action, ?), heuristic_confidence=COALESCE(heuristic_confidence, ?), body_unsubscribe_links=?, heuristic_matches=?, dmarc_arc_override=?, heuristic_processed_at=CURRENT_TIMESTAMP WHERE id=?",
-                    updates,
-                )
+                c.executemany(update_sql, updates)
                 conn.commit()
 
             print(f"Detecting duplicates and digests in {table_name}...")
