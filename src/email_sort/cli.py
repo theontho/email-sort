@@ -70,11 +70,11 @@ def command_benchmark_classification(args):
             timeout=args.timeout,
             max_tokens=args.max_tokens,
             backend=args.backend,
-        opencode_agent=args.opencode_agent,
-        opencode_provider=args.opencode_provider,
-        progress=not args.no_progress,
-        redact_inputs=args.redact_inputs,
-    )
+            opencode_agent=args.opencode_agent,
+            opencode_provider=args.opencode_provider,
+            progress=not args.no_progress,
+            redact_inputs=args.redact_inputs,
+        )
     except ValueError as exc:
         console.print(f"[red]Benchmark configuration error:[/red] {exc}")
         raise SystemExit(2) from exc

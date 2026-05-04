@@ -92,7 +92,9 @@ def _server_by_name(server_name: str) -> dict[str, Any]:
             return server
     enabled = [server.get("name") for server in get_servers() if not server.get("disabled", False)]
     available = ", ".join(str(name) for name in enabled) or "none"
-    raise ValueError(f"No enabled server named {server_name!r} found. Available servers: {available}")
+    raise ValueError(
+        f"No enabled server named {server_name!r} found. Available servers: {available}"
+    )
 
 
 def _model_context(base_url: str, model_id: str) -> dict[str, Any]:
@@ -374,7 +376,9 @@ def benchmark_classification(
         if backend == "openai":
             servers = [server for server in get_servers() if not server.get("disabled", False)]
             if len(servers) != 1:
-                raise ValueError("server is required when zero or multiple OpenAI servers are configured")
+                raise ValueError(
+                    "server is required when zero or multiple OpenAI servers are configured"
+                )
             server_name = servers[0]["name"]
         else:
             server_name = opencode_provider or "opencode"
@@ -487,7 +491,9 @@ def benchmark_classification(
                     warm_failed = True
                     warm_error = f"{type(exc).__name__}: {str(exc)[:500]}"
 
-                context = _model_context(base_url, model) if backend == "openai" else {"state": "cli"}
+                context = (
+                    _model_context(base_url, model) if backend == "openai" else {"state": "cli"}
+                )
                 model_contexts[model] = context
 
                 if warm_failed:
