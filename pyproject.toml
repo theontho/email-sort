@@ -11,24 +11,24 @@ dependencies = [
     "beautifulsoup4>=4.14.3",
     "fasttext>=0.9.3",
     "fasttext-langdetect>=1.0.5",
-    "numpy<2.0",
-    "openai>=2.32.0",
+    "numpy<3.0",
+    "openai>=2.37.0",
     "playwright>=1.59.0",
-    "pydantic>=2.13.3",
+    "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
-    "requests>=2.33.1",
+    "requests>=2.34.2",
     "rich>=13.9.4",
     "sievelib>=1.5.0",
 ]
 
 [dependency-groups]
 dev = [
-    "mypy>=1.20.2",
+    "mypy>=2.1.0",
     "pre-commit>=4.0.0",
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
-    "ruff>=0.15.12",
-    "types-requests>=2.33.0.20260408",
+    "ruff>=0.15.13",
+    "types-requests>=2.33.0.20260513",
 ]
 
 [project.scripts]
